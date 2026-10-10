@@ -28,6 +28,18 @@ CLAUDE = {
          "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
     ],
 }
+ZAI = {"data": {"limits": [
+    {"type": "TOKENS_LIMIT", "percentage": 37.5},
+    {"type": "TIME_LIMIT", "percentage": 91.0},
+    {"type": "OTHER_LIMIT", "percentage": 12.0},
+]
+}}
+CREDIT_ZAI = {"data": {"limits": [
+    {"type": "CREDIT_LIMIT", "unit": 3, "number": 5, "percentage": 40,
+     "nextResetTime": 1800003600000},
+    {"type": "CREDIT_LIMIT", "unit": 6, "number": 1, "percentage": 60,
+     "nextResetTime": 1800604800000},
+]}}
 CODEX = {
     "plan_type": "plus",
     "rate_limit": {
@@ -59,6 +71,33 @@ class Parsing(unittest.TestCase):
         self.assertEqual([(w["kind"], w["used"], w["resets_at"]) for w in wins],
                          [("session", 0, 1789463537), ("weekly", 4, 1789811340)])
 
+    def test_zai_uses_coding_plan_token_limit_only(self):
+        self.assertEqual(meter.parse_zai(ZAI), [{"kind": "session", "used": 37.5, "resets_at": None}])
+
+    def test_zai_credit_limits_map_to_session_and_weekly_windows(self):
+        self.assertEqual(
+            meter.parse_zai(CREDIT_ZAI),
+            [
+                {"kind": "session", "used": 40, "resets_at": 1800003600},
+                {"kind": "weekly", "used": 60, "resets_at": 1800604800},
+            ],
+        )
+
+    def test_fetch_zai_reads_pi_credential_and_calls_quota_endpoint(self):
+        with tempfile.TemporaryDirectory() as home:
+            auth_path = Path(home) / ".pi" / "agent" / "auth.json"
+            auth_path.parent.mkdir(parents=True)
+            auth_path.write_text(json.dumps({"zai": {"key": "test-zai-key"}}))
+            with mock.patch.dict(os.environ, {"HOME": home}), \
+                    mock.patch.object(meter, "http_json", return_value=ZAI) as request:
+                result = meter.fetch_zai()
+        request.assert_called_once_with(
+            "https://api.z.ai/api/monitor/usage/quota/limit",
+            {"Authorization": "test-zai-key", "Accept-Language": "en-US,en"},
+            "Z.AI",
+        )
+        self.assertEqual(result["windows"], [{"kind": "session", "used": 37.5, "resets_at": None}])
+
     def test_window_kind(self):
         self.assertEqual(meter.window_kind(None, "weekly"), {"kind": "weekly"})
         self.assertEqual(meter.window_kind(3 * 3600, "session"), {"kind": "hours", "n": 3})
@@ -73,7 +112,6 @@ class Parsing(unittest.TestCase):
     def test_claude_plan(self):
         self.assertEqual(meter.claude_plan({"rateLimitTier": "default_claude_max_20x"}), "Max 20x")
         self.assertEqual(meter.claude_plan({"subscriptionType": "pro"}), "Pro")
-
 
 class Http(unittest.TestCase):
     """http_json against a local server: status mapping, and no redirect ever carries the token."""
@@ -148,7 +186,9 @@ class Cache(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def fetchers(self, **fns):
-        return mock.patch.dict(meter.FETCH, fns)
+        defaults = {p: lambda: {"plan": "", "windows": []} for p in meter.PROVIDERS}
+        defaults.update(fns)
+        return mock.patch.dict(meter.FETCH, defaults)
 
     def test_failure_keeps_last_good_reading(self):
         good = [{"kind": "weekly", "used": 21, "resets_at": NOW}]
@@ -198,7 +238,7 @@ class Cache(unittest.TestCase):
         for text in ("[]", '{"claude": "x", "codex": {"windows": {"used": 1}, "error": "old"}}', "{"):
             meter.CACHE.write_text(text)
             data = meter.load()
-            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –")
+            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –   Z.AI –")
             meter.panel_lines(data, NOW, "detail", False, 62, EN)
 
 
@@ -206,26 +246,36 @@ class Rendering(unittest.TestCase):
     def test_bar_line(self):
         data = {"claude": reading([{"kind": "session", "used": 8, "resets_at": NOW + 3600},
                                    {"kind": "weekly", "used": 21, "resets_at": NOW + 3 * 86400 + 10 * 3600}]),
-                "codex": reading([{"kind": "weekly", "used": 4, "resets_at": NOW + 4 * 86400 + 5 * 3600}])}
+                "codex": reading([{"kind": "weekly", "used": 4, "resets_at": NOW + 4 * 86400 + 5 * 3600}]),
+                "zai": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 21% used 3d 10h   Codex 4% used 4d 5h")
         self.assertEqual(meter.bar_text(data, NOW, KO), "\uec82  21% 사용 3d 10h   \uec81  4% 사용 4d 5h")
 
+    def test_zai_bar_shows_token_quota(self):
+        data = {"claude": NO_LOGIN, "codex": NO_LOGIN,
+                "zai": reading([{"kind": "session", "used": 37.5, "resets_at": None}])}
+        self.assertEqual(meter.bar_text(data, NOW, EN), "Z.AI 38% used")
+
     def test_stale_reading_is_marked(self):
-        data = {"claude": reading([{"kind": "weekly", "used": 21, "resets_at": NOW + 3600}], fetched_at=NOW - 3600),
-                "codex": NO_LOGIN}
+        data = {"claude": reading([{"kind": "weekly", "used": 21, "resets_at": NOW + 3600}],
+                                  fetched_at=NOW - 3600),
+                "codex": NO_LOGIN, "zai": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude ~21% used 1h 0m")
 
     def test_passed_reset_counts_as_zero(self):
-        data = {"claude": reading([{"kind": "session", "used": 90, "resets_at": NOW - 1}]), "codex": NO_LOGIN}
+        data = {"claude": reading([{"kind": "session", "used": 90, "resets_at": NOW - 1}]),
+                "codex": NO_LOGIN, "zai": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 0% used")
 
     def test_provider_without_login_is_hidden(self):
-        data = {"claude": reading([{"kind": "weekly", "used": 5, "resets_at": None}]), "codex": NO_LOGIN}
+        data = {"claude": reading([{"kind": "weekly", "used": 5, "resets_at": None}]),
+                "codex": NO_LOGIN, "zai": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 5% used")
 
     def test_provider_with_other_error_stays(self):
-        data = {"codex": {"error": {"code": "network"}}}
+        data = {"codex": {"error": {"code": "network"}}, "zai": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –")
+
 
     def test_left(self):
         self.assertEqual(meter.left(NOW + 59, NOW), "0m")
@@ -262,7 +312,7 @@ class Setup(unittest.TestCase):
             command = json.loads(entry.split("command = ", 1)[1].split(", interval_seconds", 1)[0])
             self.assertEqual(subprocess.run(["/bin/sh", "-c", f"printf %s {command}"],
                                             capture_output=True, text=True).stdout, str(shim))
-        self.assertIn('command = "junseo99.plan-meter.open"', text)
+        self.assertIn('command = "gtrias.plan-meter.open"', text)
 
     def test_config_parsing(self):
         with tempfile.TemporaryDirectory() as tmp:

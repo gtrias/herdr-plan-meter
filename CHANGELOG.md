@@ -2,7 +2,12 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-10
+
+### Added
+
+- Z.AI GLM Coding Plan 5-hour and weekly quota windows, using Pi's existing `zai` credential.
+- Z.AI `TOKENS_LIMIT` and `CREDIT_LIMIT` response parsing.
 
 ### Changed
 

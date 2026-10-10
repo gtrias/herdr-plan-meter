@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan Meter — Claude Code and Codex plan usage in the herdr tab bar, with a popup.
+"""Plan Meter — Claude Code, Codex, and Z.AI plan usage in the herdr tab bar and popup.
 
   meter.py bar       one line for herdr's tab bar (a ui.tab_bar_right command entry);
                      refreshes the cache first when it is stale
@@ -10,11 +10,11 @@
   meter.py shim      (re)write the tab bar shim — runs on every herdr start
   meter.py event     plugin event hook: refresh when an agent turn ends
 
-Credentials come from each CLI's own login (Claude Code: macOS Keychain or
-~/.claude/.credentials.json; Codex: $CODEX_HOME/auth.json) and are sent only to that
-vendor's usage endpoint. Tokens are never refreshed here — refreshing is the CLI's job,
-and rotating a refresh token from outside can sign the CLI out — and never written to
-disk: the cache holds plan names, percentages and reset times only.
+Credentials come from each tool's own login (Claude Code: macOS Keychain or
+~/.claude/.credentials.json; Codex: $CODEX_HOME/auth.json; Z.AI: Pi's
+$PI_CODING_AGENT_DIR/auth.json) and go only to that vendor's usage endpoint.
+Tokens are never written, logged, printed, or refreshed. The cache stores plan
+names, percentages, and reset times only.
 
 PLAN_METER_DEMO=1 renders sample data without reading credentials or calling anything.
 """
@@ -39,8 +39,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-PLUGIN_ID = "junseo99.plan-meter"
-VERSION = "0.1.0"
+PLUGIN_ID = "gtrias.plan-meter"
+VERSION = "0.2.0"
 UA = f"herdr-plan-meter/{VERSION}"
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "herdr-plan-meter"
 CACHE = CACHE_DIR / "usage.json"
@@ -52,9 +52,9 @@ MANUAL_MIN_AGE = 30  # `r` in the popup and the refresh action
 FETCH_DEADLINE = 15  # herdr kills a tab bar command at 25 s, and urllib's timeout does not cover DNS
 STALE_AFTER = 900    # no successful fetch for 15 minutes: prefix the tab bar number with ~
 DEMO = os.environ.get("PLAN_METER_DEMO") == "1"
-PROVIDERS = ("claude", "codex")
-NAME = {"claude": "Claude", "codex": "Codex"}
-NERD_ICON = {"claude": "\uec82", "codex": "\uec81"}  # Nerd Fonts >= 3.5 codicons: cod-claude, cod-openai
+PROVIDERS = ("claude", "codex", "zai")
+NAME = {"claude": "Claude", "codex": "Codex", "zai": "Z.AI"}
+NERD_ICON = {"claude": "\uec82", "codex": "\uec81", "zai": "Z"}  # Text fallback; no bundled Z.AI glyph.
 
 TEXT = {
     "en": {
@@ -98,7 +98,7 @@ def plugin_config_dir():
 
 
 def load_config():
-    """Optional config.toml in the plugin config dir (`herdr plugin config-dir junseo99.plan-meter`),
+    """Optional config.toml in the plugin config dir (`herdr plugin config-dir gtrias.plan-meter`),
     flat `key = "value"` lines: lang = "auto" | "en" | "ko", icons = "text" | "nerd"."""
     try:
         text = (plugin_config_dir() / "config.toml").read_text()
@@ -275,8 +275,50 @@ def fetch_codex():
     d = http_json("https://chatgpt.com/backend-api/wham/usage", headers, "Codex")
     return {"plan": (d.get("plan_type") or "").title(), "windows": parse_codex(d)}
 
+def parse_zai(response):
+    data = response.get("data") if isinstance(response, dict) else None
+    limits = data.get("limits") if isinstance(data, dict) else None
+    windows = []
+    for limit in limits or []:
+        if not isinstance(limit, dict):
+            continue
+        if limit.get("type") == "TOKENS_LIMIT":
+            kind = "session"
+        elif limit.get("type") == "CREDIT_LIMIT":
+            kind = {(3, 5): "session", (6, 1): "weekly"}.get((limit.get("unit"), limit.get("number")))
+        else:
+            continue
+        percentage = limit.get("percentage")
+        if kind and isinstance(percentage, (int, float)) and not isinstance(percentage, bool):
+            windows.append({
+                "kind": kind,
+                "used": percentage,
+                "resets_at": to_epoch(limit.get("nextResetTime")),
+            })
+    if not windows:
+        raise FetchError("format")
+    return windows
 
-FETCH = {"claude": fetch_claude, "codex": fetch_codex}
+
+def fetch_zai():
+    agent_dir = Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi" / "agent")
+    try:
+        key = json.loads((agent_dir / "auth.json").read_text()).get("zai", {}).get("key")
+    except (OSError, ValueError, AttributeError):
+        raise FetchError("nologin")
+    if not isinstance(key, str) or not key:
+        raise FetchError("nologin")
+    response = http_json(
+        "https://api.z.ai/api/monitor/usage/quota/limit",
+        {"Authorization": key, "Accept-Language": "en-US,en"},
+        "Z.AI",
+    )
+    return {"plan": "GLM Coding Plan", "windows": parse_zai(response)}
+
+
+FETCH = {"claude": fetch_claude, "codex": fetch_codex, "zai": fetch_zai}
+
+
 
 
 def attempt(p):
@@ -314,6 +356,9 @@ def demo_data(now):
         "codex": {"plan": "Pro", "fetched_at": now - 20, "windows": [
             {"kind": "session", "used": 12, "resets_at": now + 4 * h + 26 * 60},
             {"kind": "weekly", "used": 31, "resets_at": now + 4 * d + 5 * h}]},
+        "zai": {"plan": "GLM Coding Plan", "fetched_at": now - 20, "windows": [
+            {"kind": "session", "used": 28, "resets_at": now + 2 * h + 15 * 60},
+            {"kind": "weekly", "used": 49, "resets_at": now + 5 * d + 8 * h}]},
     }
 
 
@@ -447,7 +492,8 @@ def bar_text(data, now, view):
 
 
 RGB = {"fg": (192, 202, 245), "dim": (110, 118, 150), "track": (59, 66, 97), "green": (158, 206, 106),
-       "yellow": (224, 175, 104), "red": (247, 118, 142), "claude": (217, 119, 87), "codex": (236, 236, 241)}
+       "yellow": (224, 175, 104), "red": (247, 118, 142), "claude": (217, 119, 87),
+       "codex": (236, 236, 241), "zai": (75, 124, 255)}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
