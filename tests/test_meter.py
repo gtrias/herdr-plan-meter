@@ -175,6 +175,38 @@ class Http(unittest.TestCase):
         self.assertEqual(self.leaked, [])
 
 
+class Connect(unittest.TestCase):
+    """A host whose IPv6 route drops packets: every IPv6 connect hangs until its timeout."""
+
+    def test_dead_ipv6_falls_back_to_ipv4_within_the_deadline(self):
+        v6 = lambda ip: (meter.socket.AF_INET6, meter.socket.SOCK_STREAM, 6, "", (ip, 443, 0, 0))
+        v4 = lambda ip: (meter.socket.AF_INET, meter.socket.SOCK_STREAM, 6, "", (ip, 443))
+        infos = [v6("2001:db8::1"), v6("2001:db8::2"), v4("192.0.2.1")]
+        attempts = []
+
+        class FakeSocket:
+            def __init__(self, family, *_):
+                self.family, self.timeout = family, None
+
+            def settimeout(self, t):
+                self.timeout = t
+
+            def connect(self, addr):
+                attempts.append((addr[0], self.timeout))
+                if self.family == meter.socket.AF_INET6:
+                    raise TimeoutError
+
+            def close(self):
+                pass
+
+        with mock.patch.object(meter.socket, "getaddrinfo", return_value=infos), \
+                mock.patch.object(meter.socket, "socket", FakeSocket):
+            sock = meter.connect_any(("chatgpt.com", 443), 10)
+        # families alternate, so IPv4 is the second try, not the third; each try is capped short
+        self.assertEqual(attempts, [("2001:db8::1", meter.CONNECT_TIMEOUT), ("192.0.2.1", meter.CONNECT_TIMEOUT)])
+        self.assertEqual((sock.family, sock.timeout), (meter.socket.AF_INET, 10))
+
+
 class Cache(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

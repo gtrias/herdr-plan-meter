@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Codex and Z.AI stayed stale (`~`, "Network error") on hosts whose IPv6 route drops packets: each IPv6 address used the full 10 s timeout before IPv4 was tried, so the fetch missed the 15 s deadline. Connections now give each address 3 s and alternate address families.
+- The popup clipped the Z.AI block: it was still sized for two providers. It is taller, and the detail view switches to compact when the rows still do not fit.
+
 ## [0.2.0] - 2026-10-10
 
 ### Added

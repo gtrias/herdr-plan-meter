@@ -21,12 +21,14 @@ PLAN_METER_DEMO=1 renders sample data without reading credentials or calling any
 import contextlib
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import re
 import select
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import termios
@@ -50,6 +52,7 @@ PANEL_MAX_AGE = 120  # Anthropic's usage endpoint answers 429 when polled much m
 EVENT_MIN_AGE = 120  # an agent turn just ended — usage moved; at most every 2 minutes
 MANUAL_MIN_AGE = 30  # `r` in the popup and the refresh action
 FETCH_DEADLINE = 15  # herdr kills a tab bar command at 25 s, and urllib's timeout does not cover DNS
+CONNECT_TIMEOUT = 3  # per address: a dead IPv6 route must not eat the deadline before IPv4 is tried
 STALE_AFTER = 900    # no successful fetch for 15 minutes: prefix the tab bar number with ~
 DEMO = os.environ.get("PLAN_METER_DEMO") == "1"
 PROVIDERS = ("claude", "codex", "zai")
@@ -146,7 +149,45 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # never carry the bearer token to wherever a 3xx points; it fails as HTTP 3xx
 
 
-OPENER = urllib.request.build_opener(NoRedirect)
+def connect_any(address, timeout, source_address=None):
+    """socket.create_connection, but each address gets CONNECT_TIMEOUT and the families alternate
+    (RFC 8305 order). create_connection spends the full request timeout on every address in
+    getaddrinfo order, so on a host whose IPv6 route silently drops packets two IPv6 addresses
+    cost 20 s and the fetch misses FETCH_DEADLINE before IPv4 is ever tried."""
+    host, port = address
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    first = [i for i in infos if i[0] == infos[0][0]]
+    rest = [i for i in infos if i[0] != infos[0][0]]
+    ordered = [i for pair in zip(first, rest) for i in pair] + first[len(rest):] + rest[len(first):]
+    err = OSError(f"no address for {host}")
+    for family, kind, proto, _, addr in ordered:
+        sock = socket.socket(family, kind, proto)
+        try:
+            sock.settimeout(min(CONNECT_TIMEOUT, timeout) if timeout else CONNECT_TIMEOUT)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(addr)
+        except OSError as e:
+            sock.close()
+            err = e
+            continue
+        sock.settimeout(timeout)
+        return sock
+    raise err
+
+
+class FastFallbackHTTPS(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = connect_any  # the hook HTTPConnection.connect dials through
+
+
+class FastFallbackHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(FastFallbackHTTPS, req, context=self._context)
+
+
+OPENER = urllib.request.build_opener(NoRedirect, FastFallbackHandler)
 
 
 def http_json(url, headers, cli):
@@ -613,7 +654,13 @@ def panel(view):
             if now - last >= PANEL_MAX_AGE:
                 kick(PANEL_MAX_AGE)
                 last = now
-            screen.draw(panel_lines(load(), now, ui["mode"], ui["busy"], os.get_terminal_size()[0], view))
+            W, H = os.get_terminal_size()
+            data = load()
+            lines = panel_lines(data, now, ui["mode"], ui["busy"], W, view)
+            if ui["mode"] == "detail" and len(lines) > H:  # clipped rows would hide a provider
+                ui["mode"] = "compact"
+                lines = panel_lines(data, now, "compact", ui["busy"], W, view)
+            screen.draw(lines)
             key = screen.key(0.5)
             if key in QUIT:
                 break

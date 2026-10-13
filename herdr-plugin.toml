@@ -24,7 +24,7 @@ id = "panel"
 title = "Plan Meter"
 placement = "popup"
 width = 64
-height = 16
+height = 22  # detail view of all three providers with an error line each is 18 rows, plus the border
 command = ["python3", "meter.py", "panel"]
 
 [[panes]]
