@@ -353,6 +353,97 @@ class Setup(unittest.TestCase):
                 self.assertEqual(meter.load_config(), {"lang": "ko", "icons": "nerd"})
 
 
+class TokenRefresh(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg = self.tmp.name
+        creds = {"claudeAiOauth": {
+            "accessToken": "old-access", "refreshToken": "good-refresh",
+            "expiresAt": 1000, "refreshTokenExpiresAt": int((NOW + 86400) * 1000),
+            "subscriptionType": "pro", "rateLimitTier": "default_claude_max_5x",
+        }}
+        (Path(self.cfg) / ".credentials.json").write_text(json.dumps(creds))
+
+    def mock_token_response(self, response=None, status=None):
+        resp = response or {"access_token": "new-access", "refresh_token": "new-refresh",
+                            "expires_in": 28800, "refresh_token_expires_in": 604800}
+
+        def handler(url, headers, cli):
+            if "v1/oauth/token" in url:
+                if status:
+                    raise meter.FetchError("expired", cli="Claude Code")
+                return resp
+            return CLAUDE
+        return handler
+
+    def test_refresh_writes_new_tokens(self):
+        oauth = {"accessToken": "old", "refreshToken": "good-refresh",
+                 "expiresAt": 1000, "refreshTokenExpiresAt": int((NOW + 86400) * 1000)}
+        with mock.patch.object(meter, "OPENER") as opener:
+            resp = mock.MagicMock()
+            resp.__enter__ = mock.MagicMock(return_value=resp)
+            resp.__exit__ = mock.MagicMock(return_value=False)
+            resp.read.return_value = json.dumps({
+                "access_token": "new-access", "refresh_token": "new-refresh",
+                "expires_in": 28800, "refresh_token_expires_in": 604800,
+            }).encode()
+            json.load = json.load  # keep real json.load
+            opener.open.return_value = resp
+            new = meter.claude_refresh(oauth, self.cfg)
+        self.assertEqual(new["accessToken"], "new-access")
+        self.assertEqual(new["refreshToken"], "new-refresh")
+        saved = json.loads((Path(self.cfg) / ".credentials.json").read_text())
+        self.assertEqual(saved["claudeAiOauth"]["accessToken"], "new-access")
+
+    def test_no_refresh_token_raises_expired(self):
+        oauth = {"accessToken": "old", "expiresAt": 1000}
+        with self.assertRaises(meter.FetchError) as ctx:
+            meter.claude_refresh(oauth, self.cfg)
+        self.assertEqual(ctx.exception.code, "expired")
+
+    def test_expired_refresh_token_raises_expired(self):
+        oauth = {"accessToken": "old", "refreshToken": "rt",
+                 "refreshTokenExpiresAt": int((time.time() - 100) * 1000)}
+        with self.assertRaises(meter.FetchError) as ctx:
+            meter.claude_refresh(oauth, self.cfg)
+        self.assertEqual(ctx.exception.code, "expired")
+
+    def test_fetch_claude_refreshes_expired_token(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cfg}), \
+                mock.patch.object(meter, "http_json", return_value=CLAUDE) as http, \
+                mock.patch.object(meter, "claude_refresh", return_value={
+                    "accessToken": "fresh", "subscriptionType": "pro",
+                    "rateLimitTier": "default_claude_max_5x"}) as refresh:
+            result = meter.fetch_claude()
+        refresh.assert_called_once()
+        http.assert_called_once()
+        self.assertIn("Bearer fresh", http.call_args[0][1]["Authorization"])
+
+    def test_fetch_claude_retries_on_401(self):
+        calls = []
+
+        def http_side_effect(url, headers, cli):
+            calls.append(headers.get("Authorization"))
+            if len(calls) == 1:
+                raise meter.FetchError("expired", cli="Claude Code")
+            return CLAUDE
+
+        # make the token not expired so we hit the 401 retry path
+        creds = json.loads((Path(self.cfg) / ".credentials.json").read_text())
+        creds["claudeAiOauth"]["expiresAt"] = int((time.time() + 3600) * 1000)
+        (Path(self.cfg) / ".credentials.json").write_text(json.dumps(creds))
+
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cfg}), \
+                mock.patch.object(meter, "http_json", side_effect=http_side_effect), \
+                mock.patch.object(meter, "claude_refresh", return_value={
+                    "accessToken": "refreshed", "subscriptionType": "pro",
+                    "rateLimitTier": "default_claude_max_5x"}):
+            result = meter.fetch_claude()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Bearer refreshed", calls[1])
+
+
 class EventHook(unittest.TestCase):
     def run_event(self, status):
         env = {"HERDR_PLUGIN_EVENT_JSON": f'{{"type": "pane.agent_status_changed", "agent_status": "{status}"}}'}

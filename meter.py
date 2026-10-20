@@ -13,8 +13,9 @@
 Credentials come from each tool's own login (Claude Code: macOS Keychain or
 ~/.claude/.credentials.json; Codex: $CODEX_HOME/auth.json; Z.AI: Pi's
 $PI_CODING_AGENT_DIR/auth.json) and go only to that vendor's usage endpoint.
-Tokens are never written, logged, printed, or refreshed. The cache stores plan
-names, percentages, and reset times only.
+When a Claude access token has expired, the plugin uses the refresh token to
+obtain a new one and writes it back to ~/.claude/.credentials.json (or the
+macOS Keychain). The cache stores plan names, percentages, and reset times only.
 
 PLAN_METER_DEMO=1 renders sample data without reading credentials or calling anything.
 """
@@ -37,6 +38,7 @@ import time
 import tty
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -238,6 +240,10 @@ def claude_blobs(cfg):
         pass
 
 
+CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+
 def claude_oauth():
     cfg = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
     for blob in claude_blobs(cfg):
@@ -246,8 +252,67 @@ def claude_oauth():
         except (ValueError, AttributeError):
             continue
         if oauth.get("accessToken"):
-            return oauth
+            return oauth, cfg
     raise FetchError("nologin")
+
+
+def claude_refresh(oauth, cfg):
+    """Use the refresh token to obtain a fresh access token from Anthropic."""
+    rt = oauth.get("refreshToken")
+    if not rt:
+        raise FetchError("expired", cli="Claude Code")
+    if oauth.get("refreshTokenExpiresAt") and oauth["refreshTokenExpiresAt"] / 1000 < time.time():
+        raise FetchError("expired", cli="Claude Code")
+    body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": rt,
+                                    "client_id": CLAUDE_CLIENT_ID}).encode()
+    req = urllib.request.Request(CLAUDE_TOKEN_URL, data=body, method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA})
+    try:
+        with OPENER.open(req, timeout=10) as r:
+            tokens = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401, 403):
+            raise FetchError("expired", cli="Claude Code")
+        raise FetchError("http", status=e.code)
+    except (ValueError, OSError):
+        raise FetchError("network")
+    new_oauth = {**oauth}
+    if tokens.get("access_token"):
+        new_oauth["accessToken"] = tokens["access_token"]
+    if tokens.get("refresh_token"):
+        new_oauth["refreshToken"] = tokens["refresh_token"]
+    if tokens.get("expires_in"):
+        new_oauth["expiresAt"] = int((time.time() + tokens["expires_in"]) * 1000)
+    if tokens.get("refresh_token_expires_in"):
+        new_oauth["refreshTokenExpiresAt"] = int((time.time() + tokens["refresh_token_expires_in"]) * 1000)
+    claude_save(new_oauth, cfg)
+    return new_oauth
+
+
+def claude_save(oauth, cfg):
+    """Write refreshed tokens back to the credentials file."""
+    cred_path = Path(cfg) / ".credentials.json"
+    try:
+        creds = json.loads(cred_path.read_text())
+    except (OSError, ValueError):
+        creds = {}
+    creds["claudeAiOauth"] = oauth
+    tmp = cred_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(creds, ensure_ascii=False))
+    os.replace(tmp, cred_path)
+    if sys.platform == "darwin":
+        service = "Claude Code-credentials-" + hashlib.sha256(cfg.encode()).hexdigest()[:8]
+        try:
+            subprocess.run(["/usr/bin/security", "delete-generic-password", "-s", service],
+                           capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            subprocess.run(["/usr/bin/security", "add-generic-password", "-s", service,
+                            "-a", "", "-w", json.dumps(creds, ensure_ascii=False), "-U"],
+                           capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 def claude_plan(oauth):
@@ -272,12 +337,21 @@ def parse_claude(d):
 
 
 def fetch_claude():
-    oauth = claude_oauth()
+    oauth, cfg = claude_oauth()
     if oauth.get("expiresAt") and oauth["expiresAt"] / 1000 < time.time():
-        raise FetchError("expired", cli="Claude Code")
-    d = http_json("https://api.anthropic.com/api/oauth/usage",
-                  {"Authorization": f"Bearer {oauth['accessToken']}", "anthropic-beta": "oauth-2025-04-20"},
-                  "Claude Code")
+        oauth = claude_refresh(oauth, cfg)
+    try:
+        d = http_json("https://api.anthropic.com/api/oauth/usage",
+                      {"Authorization": f"Bearer {oauth['accessToken']}", "anthropic-beta": "oauth-2025-04-20"},
+                      "Claude Code")
+    except FetchError as e:
+        if e.code == "expired" and oauth.get("refreshToken"):
+            oauth = claude_refresh(oauth, cfg)
+            d = http_json("https://api.anthropic.com/api/oauth/usage",
+                          {"Authorization": f"Bearer {oauth['accessToken']}", "anthropic-beta": "oauth-2025-04-20"},
+                          "Claude Code")
+        else:
+            raise
     return {"plan": claude_plan(oauth), "windows": parse_claude(d)}
 
 
