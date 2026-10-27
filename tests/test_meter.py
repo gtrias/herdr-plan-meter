@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,13 @@ CREDIT_ZAI = {"data": {"limits": [
     {"type": "CREDIT_LIMIT", "unit": 6, "number": 1, "percentage": 60,
      "nextResetTime": 1800604800000},
 ]}}
+DEEPSEEK = {
+    "is_available": True,
+    "balance_infos": [
+        {"currency": "USD", "total_balance": "19.39", "granted_balance": "0.00",
+         "topped_up_balance": "19.39"},
+    ],
+}
 CODEX = {
     "plan_type": "plus",
     "rate_limit": {
@@ -112,6 +120,68 @@ class Parsing(unittest.TestCase):
     def test_claude_plan(self):
         self.assertEqual(meter.claude_plan({"rateLimitTier": "default_claude_max_20x"}), "Max 20x")
         self.assertEqual(meter.claude_plan({"subscriptionType": "pro"}), "Pro")
+
+    def test_deepseek_balance(self):
+        self.assertEqual(meter.parse_deepseek(DEEPSEEK),
+                         {"amount": 19.39, "currency": "USD", "granted": 0.0,
+                          "topped_up": 19.39, "available": True})
+        self.assertFalse(meter.parse_deepseek({**DEEPSEEK, "is_available": False})["available"])
+
+    def test_deepseek_unknown_shape(self):
+        for bad in ({}, {"balance_infos": []}, {"balance_infos": [{"currency": "USD"}]}, "nope"):
+            with self.assertRaises(meter.FetchError) as ctx:
+                meter.parse_deepseek(bad)
+            self.assertEqual(ctx.exception.code, "format")
+
+    def test_fetch_deepseek_reads_env_key_and_balance_endpoint(self):
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-test"}), \
+                mock.patch.object(meter, "http_json", return_value=DEEPSEEK) as request:
+            result = meter.fetch_deepseek()
+        request.assert_called_once_with("https://api.deepseek.com/user/balance",
+                                        {"Authorization": "Bearer sk-test", "Accept": "application/json"},
+                                        "DeepSeek")
+        self.assertEqual(result, {"plan": "API", "windows": [], "balance": meter.parse_deepseek(DEEPSEEK)})
+
+    def test_fetch_deepseek_rejected_key(self):
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-bad"}), \
+                mock.patch.object(meter, "http_json", side_effect=meter.FetchError("expired", cli="DeepSeek")):
+            with self.assertRaises(meter.FetchError) as ctx:
+                meter.fetch_deepseek()
+        self.assertEqual(ctx.exception.code, "badkey")
+
+    def test_fetch_deepseek_without_a_key_is_nologin(self):
+        clean = {k: v for k, v in os.environ.items() if k != "DEEPSEEK_API_KEY"}
+        with mock.patch.dict(os.environ, {**clean, "HERDR_PLUGIN_CONFIG_DIR": "/nonexistent",
+                                          "OMP_AGENT_DIR": "/nonexistent"}):
+            with self.assertRaises(meter.FetchError) as ctx:
+                meter.fetch_deepseek()
+        self.assertEqual(ctx.exception.code, "nologin")
+
+    def test_deepseek_key_comes_from_omps_credential_store(self):
+        with tempfile.TemporaryDirectory() as home:
+            agent = Path(home) / "agent"
+            agent.mkdir()
+            conn = sqlite3.connect(agent / "agent.db")
+            conn.execute("create table auth_credentials (provider text, credential_type text, data text,"
+                         " disabled_cause text, updated_at real)")
+            conn.execute("insert into auth_credentials values ('deepseek', 'api_key', ?, null, 2)",
+                         (json.dumps({"key": "sk-omp"}),))
+            conn.execute("insert into auth_credentials values ('deepseek', 'api_key', ?, 'deleted by user', 3)",
+                         (json.dumps({"key": "sk-deleted"}),))
+            conn.commit()
+            conn.close()
+            clean = {k: v for k, v in os.environ.items() if k != "DEEPSEEK_API_KEY"}
+            with mock.patch.dict(os.environ, {**clean, "OMP_AGENT_DIR": str(agent),
+                                              "HERDR_PLUGIN_CONFIG_DIR": str(Path(home) / "cfg")}):
+                self.assertEqual(meter.deepseek_key(), "sk-omp")
+
+    def test_deepseek_key_from_plugin_config(self):
+        with tempfile.TemporaryDirectory() as cfg:
+            (Path(cfg) / "config.toml").write_text('deepseek_key = "sk-config"\n')
+            clean = {k: v for k, v in os.environ.items() if k != "DEEPSEEK_API_KEY"}
+            with mock.patch.dict(os.environ, {**clean, "HERDR_PLUGIN_CONFIG_DIR": cfg,
+                                              "OMP_AGENT_DIR": "/nonexistent"}):
+                self.assertEqual(meter.deepseek_key(), "sk-config")
 
 class Http(unittest.TestCase):
     """http_json against a local server: status mapping, and no redirect ever carries the token."""
@@ -270,7 +340,7 @@ class Cache(unittest.TestCase):
         for text in ("[]", '{"claude": "x", "codex": {"windows": {"used": 1}, "error": "old"}}', "{"):
             meter.CACHE.write_text(text)
             data = meter.load()
-            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –   Z.AI –")
+            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –   Z.AI –   DeepSeek –")
             meter.panel_lines(data, NOW, "detail", False, 62, EN)
 
 
@@ -279,35 +349,62 @@ class Rendering(unittest.TestCase):
         data = {"claude": reading([{"kind": "session", "used": 8, "resets_at": NOW + 3600},
                                    {"kind": "weekly", "used": 21, "resets_at": NOW + 3 * 86400 + 10 * 3600}]),
                 "codex": reading([{"kind": "weekly", "used": 4, "resets_at": NOW + 4 * 86400 + 5 * 3600}]),
-                "zai": NO_LOGIN}
+                "zai": NO_LOGIN, "deepseek": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 21% used 3d 10h   Codex 4% used 4d 5h")
         self.assertEqual(meter.bar_text(data, NOW, KO), "\uec82  21% 사용 3d 10h   \uec81  4% 사용 4d 5h")
 
     def test_zai_bar_shows_token_quota(self):
         data = {"claude": NO_LOGIN, "codex": NO_LOGIN,
-                "zai": reading([{"kind": "session", "used": 37.5, "resets_at": None}])}
+                "zai": reading([{"kind": "session", "used": 37.5, "resets_at": None}]), "deepseek": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Z.AI 38% used")
 
     def test_stale_reading_is_marked(self):
         data = {"claude": reading([{"kind": "weekly", "used": 21, "resets_at": NOW + 3600}],
                                   fetched_at=NOW - 3600),
-                "codex": NO_LOGIN, "zai": NO_LOGIN}
+                "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude ~21% used 1h 0m")
 
     def test_passed_reset_counts_as_zero(self):
         data = {"claude": reading([{"kind": "session", "used": 90, "resets_at": NOW - 1}]),
-                "codex": NO_LOGIN, "zai": NO_LOGIN}
+                "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 0% used")
 
     def test_provider_without_login_is_hidden(self):
         data = {"claude": reading([{"kind": "weekly", "used": 5, "resets_at": None}]),
-                "codex": NO_LOGIN, "zai": NO_LOGIN}
+                "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 5% used")
 
     def test_provider_with_other_error_stays(self):
-        data = {"codex": {"error": {"code": "network"}}, "zai": NO_LOGIN}
+        data = {"codex": {"error": {"code": "network"}}, "zai": NO_LOGIN, "deepseek": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –")
 
+
+    def test_bar_shows_deepseek_balance(self):
+        data = {"claude": NO_LOGIN, "codex": NO_LOGIN, "zai": NO_LOGIN,
+                "deepseek": {"windows": [], "fetched_at": NOW - 20, "balance": meter.parse_deepseek(DEEPSEEK)}}
+        self.assertEqual(meter.bar_text(data, NOW, EN), "DeepSeek $19.39 left")
+        self.assertEqual(meter.bar_text(data, NOW, KO), "D  $19.39 남음")
+
+    def test_stale_balance_is_marked(self):
+        data = {"claude": NO_LOGIN, "codex": NO_LOGIN, "zai": NO_LOGIN,
+                "deepseek": {"windows": [], "fetched_at": NOW - 3600,
+                             "balance": meter.parse_deepseek(DEEPSEEK)}}
+        self.assertEqual(meter.bar_text(data, NOW, EN), "DeepSeek ~$19.39 left")
+
+    def test_balance_currency_and_panel(self):
+        self.assertEqual(meter.balance_text({"amount": 110.0, "currency": "CNY"}), "¥110.00")
+        self.assertEqual(meter.balance_text({"amount": 5, "currency": "CHF"}), "CHF 5.00")
+        data = {"claude": NO_LOGIN, "codex": NO_LOGIN, "zai": NO_LOGIN,
+                "deepseek": {"plan": "API", "windows": [], "fetched_at": NOW - 20,
+                             "balance": {"amount": 19.39, "currency": "USD", "granted": 2.0,
+                                         "topped_up": 17.39, "available": True}}}
+        detail = meter.ANSI.sub("", "\n".join(meter.panel_lines(data, NOW, "detail", False, 62, EN)))
+        self.assertIn("$19.39", detail)
+        self.assertIn("topped up $17.39 · granted $2.00", detail)
+        self.assertIn("Balance", detail)
+        compact = meter.ANSI.sub("", "\n".join(meter.panel_lines(data, NOW, "compact", False, 62, EN)))
+        self.assertIn("$19.39", compact)
+        self.assertNotIn("Balance", compact)
 
     def test_left(self):
         self.assertEqual(meter.left(NOW + 59, NOW), "0m")
@@ -329,6 +426,11 @@ class Rendering(unittest.TestCase):
         for view in (EN, KO):
             for line in meter.panel_lines(data, NOW, "detail", False, 62, view):
                 self.assertLessEqual(meter.width(line), 62, meter.ANSI.sub("", line))
+
+
+class Errors(unittest.TestCase):
+    def test_badkey_text(self):
+        self.assertEqual(meter.error_text({"code": "badkey"}, EN.t), "API key rejected — sign in again")
 
 
 class Setup(unittest.TestCase):

@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The project follows [Se
 
 ## [Unreleased]
 
+### Added
+
+- DeepSeek's pay-as-you-go account balance, in the tab bar (`$19.39 left`) and the popup (`topped up`/`granted` split). The key is read from `$DEEPSEEK_API_KEY`, the plugin config's `deepseek_key`, or omp's credential store (`~/.omp/agent/agent.db`, read-only). DeepSeek publishes no usage or quota endpoint, so there is no percentage and no reset time.
+- A rejected DeepSeek key reports "API key rejected" instead of a login-expiry prompt.
+
 ### Fixed
 
 - Codex and Z.AI stayed stale (`~`, "Network error") on hosts whose IPv6 route drops packets: each IPv6 address used the full 10 s timeout before IPv4 was tried, so the fetch missed the 15 s deadline. Connections now give each address 3 s and alternate address families.

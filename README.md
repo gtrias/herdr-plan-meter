@@ -2,7 +2,7 @@
 
 # Plan Meter
 
-### Claude Code, Codex, and Z.AI plan usage, one glance away in herdr.
+### Claude Code, Codex, Z.AI, and DeepSeek usage, one glance away in herdr.
 
 The limit you are closest to sits in the tab bar. One key opens every window.
 
@@ -29,8 +29,8 @@ The second command opens a popup with the config snippet for your install. Press
 
 | Where | What |
 |---|---|
-| Tab bar | For each plan, the window closest to its limit: percent used and time until it resets. `~` marks a reading older than 15 minutes. |
-| Popup (`prefix+u`) | Every window (5-hour, weekly, per-model weekly) with a bar colored by headroom and the reset time on your clock. `Tab` switches Detail/Compact, `r` refreshes, `q` closes. |
+| Tab bar | For each plan, the window closest to its limit: percent used and time until it resets. DeepSeek, which has no quota, shows its remaining API balance. `~` marks a reading older than 15 minutes. |
+| Popup (`prefix+u`) | Every window (5-hour, weekly, per-model weekly) with a bar colored by headroom and the reset time on your clock; the DeepSeek balance with what was topped up and granted. `Tab` switches Detail/Compact, `r` refreshes, `q` closes. |
 | Errors | An expired login, a 429, or a changed response shows in the popup. The last good reading stays in place. |
 
 Only plans you are signed into appear.
@@ -75,11 +75,12 @@ Manual refreshes are limited to one every 30 seconds.
 ```toml
 lang = "auto"   # auto | en | ko. auto follows the macOS UI language, then LANG.
 icons = "text"  # text | nerd
+# deepseek_key = "sk-…"  # only when neither $DEEPSEEK_API_KEY nor omp's credential store has one
 ```
 
 ### Brand icons
 
-`icons = "nerd"` replaces Claude and Codex names with Nerd Fonts 3.5 logos. Z.AI uses a text fallback because Plan Meter does not bundle a Z.AI glyph.
+`icons = "nerd"` replaces Claude and Codex names with Nerd Fonts 3.5 logos. Z.AI and DeepSeek fall back to their initial because Plan Meter does not bundle those glyphs.
 
 ```bash
 brew install --cask font-symbols-only-nerd-font
@@ -92,11 +93,11 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 
 ## How it works
 
-| | Claude Code | Codex | Z.AI |
-|---|---|---|---|
-| Login it reads | Claude Code OAuth from macOS Keychain or `~/.claude/.credentials.json` on Linux; respects `CLAUDE_CONFIG_DIR`. | `$CODEX_HOME/auth.json` (default `~/.codex`) from a ChatGPT sign-in. | Pi's `auth.json` (`$PI_CODING_AGENT_DIR`, default `~/.pi/agent`), provider `zai`. |
-| Endpoint | `api.anthropic.com/api/oauth/usage` | `chatgpt.com/backend-api/wham/usage` | `api.z.ai/api/monitor/usage/quota/limit` |
-| Windows | 5-hour, weekly, per-model weekly | 5-hour, weekly | 5-hour and weekly coding-plan limits |
+| | Claude Code | Codex | Z.AI | DeepSeek |
+|---|---|---|---|---|
+| Login it reads | Claude Code OAuth from macOS Keychain or `~/.claude/.credentials.json` on Linux; respects `CLAUDE_CONFIG_DIR`. | `$CODEX_HOME/auth.json` (default `~/.codex`) from a ChatGPT sign-in. | Pi's `auth.json` (`$PI_CODING_AGENT_DIR`, default `~/.pi/agent`), provider `zai`. | `$DEEPSEEK_API_KEY`, the plugin's `deepseek_key`, or omp's SQLite credential store (`$OMP_AGENT_DIR`, default `~/.omp/agent/agent.db`), provider `deepseek`. |
+| Endpoint | `api.anthropic.com/api/oauth/usage` | `chatgpt.com/backend-api/wham/usage` | `api.z.ai/api/monitor/usage/quota/limit` | `api.deepseek.com/user/balance` |
+| Windows | 5-hour, weekly, per-model weekly | 5-hour, weekly | 5-hour and weekly coding-plan limits | None: pay-as-you-go account balance |
 
 - **Tokens stay put.** Each fetch reads its credential, sends it only to that vendor's usage endpoint, and forgets it. Redirects are refused. Plan Meter never writes, caches, logs, prints, or refreshes credentials.
 - **The cache holds usage data only.** `~/.cache/herdr-plan-meter/usage.json` (under `$XDG_CACHE_HOME` if set) stores plan names, percentages, and reset times. [SECURITY.md](SECURITY.md) lists every file Plan Meter reads and writes.
@@ -106,9 +107,10 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 
 - Claude and Codex usage endpoints are undocumented. Z.AI's quota endpoint is used by its [official GLM Coding Plan usage plugin](https://docs.z.ai/devpack/extension/usage-query-plugin), but returned quota fields vary by plan generation.
 - Z.AI `CREDIT_LIMIT` windows map `unit=3, number=5` to 5 hours and `unit=6, number=1` to weekly; the API may change.
+- DeepSeek publishes no usage or quota API, only the account balance, so Plan Meter shows the money left rather than a percentage.
 - **A gray area.** Plan Meter sends Claude Code's OAuth token to Anthropic's usage endpoint outside Claude Code. It only reads quota and makes no model requests; check your applicable terms.
 - On macOS, the first Claude credential read may prompt for Keychain access.
-- Plan Meter is not affiliated with Anthropic, OpenAI, Z.AI, or herdr.
+- Plan Meter is not affiliated with Anthropic, OpenAI, Z.AI, DeepSeek, or herdr.
 
 ## Troubleshooting
 
@@ -117,6 +119,7 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 | Nothing in the tab bar | Run `$(herdr plugin config-dir gtrias.plan-meter)/tab-bar.sh` by hand, then check that the snippet is inside your one `[ui]` table. |
 | "Login expired" for Claude | Start Claude Code once. It refreshes its own token and the next poll picks it up. |
 | Z.AI is missing | Sign into Z.AI in Pi; Plan Meter reads `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) and needs its `zai` key. |
+| DeepSeek is missing | Plan Meter needs `$DEEPSEEK_API_KEY`, `deepseek_key` in the plugin config, or a `deepseek` API key in omp's credential store (`~/.omp/agent/agent.db`). |
 | A plan is missing | Plans without a subscription login are hidden. API-key logins have no Claude or Codex subscription limits. |
 | A box or a CJK glyph instead of a logo | Your font lacks Nerd Fonts 3.5 glyphs. See [Brand icons](#brand-icons), or set `icons = "text"`. |
 | Logs | `herdr plugin log list --plugin gtrias.plan-meter` |
@@ -135,7 +138,7 @@ After uninstalling, remove the snippet from `config.toml` and delete `~/.cache/h
 - herdr 0.9 or later (popup panes, `tab_bar_right` command entries)
 - Python 3.9 or later, standard library only
 - macOS or Linux. On Linux, only the sample-data tests run in CI; it has not been tried with a live account.
-- Claude Code and/or Codex CLI signed in with a subscription; Pi signed in to Z.AI GLM Coding Plan for the Z.AI meter
+- Claude Code and/or Codex CLI signed in with a subscription; Pi signed in to Z.AI GLM Coding Plan for the Z.AI meter; a DeepSeek API key for the DeepSeek balance
 
 ## Try it without an account
 

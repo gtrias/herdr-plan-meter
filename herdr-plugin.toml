@@ -1,8 +1,8 @@
 id = "gtrias.plan-meter"
 name = "Plan Meter"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"  # popup panes + tab_bar_right command entries; the version it is tested on
-description = "Claude Code, Codex, and Z.AI GLM Coding Plan usage — 5h and weekly limits with reset countdowns — in the tab bar, with a detail popup"
+description = "Claude Code, Codex, and Z.AI GLM Coding Plan usage — 5h and weekly limits with reset countdowns — plus the DeepSeek API balance, in the tab bar, with a detail popup"
 platforms = ["linux", "macos"]
 
 # The tab bar line itself is a `ui.tab_bar_right` command entry in the user's config.toml

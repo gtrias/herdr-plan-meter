@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan Meter — Claude Code, Codex, and Z.AI plan usage in the herdr tab bar and popup.
+"""Plan Meter — Claude Code, Codex, Z.AI, and DeepSeek usage in the herdr tab bar and popup.
 
   meter.py bar       one line for herdr's tab bar (a ui.tab_bar_right command entry);
                      refreshes the cache first when it is stale
@@ -12,7 +12,9 @@
 
 Credentials come from each tool's own login (Claude Code: macOS Keychain or
 ~/.claude/.credentials.json; Codex: $CODEX_HOME/auth.json; Z.AI: Pi's
-$PI_CODING_AGENT_DIR/auth.json) and go only to that vendor's usage endpoint.
+$PI_CODING_AGENT_DIR/auth.json; DeepSeek: $DEEPSEEK_API_KEY, the plugin
+config, or omp's ~/.omp/agent/agent.db) and go only to that vendor's usage
+endpoint.
 When a Claude access token has expired, the plugin uses the refresh token to
 obtain a new one and writes it back to ~/.claude/.credentials.json (or the
 macOS Keychain). The cache stores plan names, percentages, and reset times only.
@@ -30,6 +32,7 @@ import select
 import shlex
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import termios
@@ -44,7 +47,7 @@ from datetime import datetime
 from pathlib import Path
 
 PLUGIN_ID = "gtrias.plan-meter"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 UA = f"herdr-plan-meter/{VERSION}"
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "herdr-plan-meter"
 CACHE = CACHE_DIR / "usage.json"
@@ -57,9 +60,9 @@ FETCH_DEADLINE = 15  # herdr kills a tab bar command at 25 s, and urllib's timeo
 CONNECT_TIMEOUT = 3  # per address: a dead IPv6 route must not eat the deadline before IPv4 is tried
 STALE_AFTER = 900    # no successful fetch for 15 minutes: prefix the tab bar number with ~
 DEMO = os.environ.get("PLAN_METER_DEMO") == "1"
-PROVIDERS = ("claude", "codex", "zai")
-NAME = {"claude": "Claude", "codex": "Codex", "zai": "Z.AI"}
-NERD_ICON = {"claude": "\uec82", "codex": "\uec81", "zai": "Z"}  # Text fallback; no bundled Z.AI glyph.
+PROVIDERS = ("claude", "codex", "zai", "deepseek")
+NAME = {"claude": "Claude", "codex": "Codex", "zai": "Z.AI", "deepseek": "DeepSeek"}
+NERD_ICON = {"claude": "\uec82", "codex": "\uec81", "zai": "Z", "deepseek": "D"}  # Text fallback; no bundled glyph.
 
 TEXT = {
     "en": {
@@ -73,6 +76,8 @@ TEXT = {
         "nologin": "Not logged in", "unexpected": "Unexpected error: {name}",
         "setup_title": "Add this to {path}, then run `herdr server reload-config`:",
         "setup_keys": "c copy to clipboard · q close", "copied": "Copied.", "no_clipboard": "No clipboard tool found.",
+        "left": "left", "balance": "Balance", "granted": "granted {amount}", "topped": "topped up {amount}",
+        "badkey": "API key rejected — sign in again",
     },
     "ko": {
         "used": "사용", "session": "5시간", "weekly": "주간", "hours": "{n}시간", "days": "{n}일",
@@ -85,6 +90,8 @@ TEXT = {
         "nologin": "로그인 정보 없음", "unexpected": "예상 밖 오류: {name}",
         "setup_title": "{path} 에 아래를 붙여 넣고 `herdr server reload-config` 를 실행하세요:",
         "setup_keys": "c 클립보드에 복사 · q 닫기", "copied": "복사했어요.", "no_clipboard": "클립보드 도구가 없어요.",
+        "left": "남음", "balance": "잔액", "granted": "지급 {amount}", "topped": "충전 {amount}",
+        "badkey": "API 키가 거부됐어요 — 다시 로그인하세요",
     },
 }
 
@@ -104,7 +111,9 @@ def plugin_config_dir():
 
 def load_config():
     """Optional config.toml in the plugin config dir (`herdr plugin config-dir gtrias.plan-meter`),
-    flat `key = "value"` lines: lang = "auto" | "en" | "ko", icons = "text" | "nerd"."""
+    flat `key = "value"` lines: lang = "auto" | "en" | "ko", icons = "text" | "nerd",
+    deepseek_key = "sk-…" (only needed when neither $DEEPSEEK_API_KEY nor omp's
+    credential store has one)."""
     try:
         text = (plugin_config_dir() / "config.toml").read_text()
     except OSError:
@@ -431,9 +440,72 @@ def fetch_zai():
     return {"plan": "GLM Coding Plan", "windows": parse_zai(response)}
 
 
-FETCH = {"claude": fetch_claude, "codex": fetch_codex, "zai": fetch_zai}
+DEEPSEEK_URL = "https://api.deepseek.com/user/balance"
 
 
+def omp_api_key(provider):
+    """omp keeps provider keys in its SQLite credential store. Read one without writing: the
+    connection is read-only, so a running omp never waits on or is disturbed by this."""
+    db = Path(os.environ.get("OMP_AGENT_DIR") or Path.home() / ".omp" / "agent") / "agent.db"
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "select data from auth_credentials where provider = ? and credential_type = 'api_key'"
+            " and disabled_cause is null order by updated_at desc limit 1", (provider,)).fetchone()
+    except sqlite3.Error:  # older layout, a half-written DB, or a locked one
+        return None
+    finally:
+        conn.close()
+    try:
+        key = json.loads(row[0]).get("key") if row else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return key if isinstance(key, str) and key else None
+
+
+def deepseek_key():
+    key = os.environ.get("DEEPSEEK_API_KEY") or load_config().get("deepseek_key")
+    return key if key else omp_api_key("deepseek")
+
+
+def parse_deepseek(d):
+    """DeepSeek is pay as you go: there is no quota window, only the account balance."""
+    infos = d.get("balance_infos") if isinstance(d, dict) else None
+    info = next((i for i in infos or [] if isinstance(i, dict)), None)
+    if info is None:
+        raise FetchError("format")
+
+    def amount(v, default=None):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            if default is None:
+                raise FetchError("format")
+            return default
+
+    return {"amount": amount(info.get("total_balance")), "currency": str(info.get("currency") or ""),
+            "granted": amount(info.get("granted_balance"), 0.0),
+            "topped_up": amount(info.get("topped_up_balance"), 0.0),
+            "available": bool(d.get("is_available", True))}
+
+
+def fetch_deepseek():
+    key = deepseek_key()
+    if not key:
+        raise FetchError("nologin")
+    try:
+        d = http_json(DEEPSEEK_URL, {"Authorization": f"Bearer {key}", "Accept": "application/json"}, "DeepSeek")
+    except FetchError as e:
+        if e.code == "expired":  # 401/403 means the key is stale, not a rate limit
+            raise FetchError("badkey") from None
+        raise
+    return {"plan": "API", "windows": [], "balance": parse_deepseek(d)}
+
+
+FETCH = {"claude": fetch_claude, "codex": fetch_codex, "zai": fetch_zai, "deepseek": fetch_deepseek}
 
 
 def attempt(p):
@@ -474,6 +546,9 @@ def demo_data(now):
         "zai": {"plan": "GLM Coding Plan", "fetched_at": now - 20, "windows": [
             {"kind": "session", "used": 28, "resets_at": now + 2 * h + 15 * 60},
             {"kind": "weekly", "used": 49, "resets_at": now + 5 * d + 8 * h}]},
+        "deepseek": {"plan": "API", "fetched_at": now - 20, "windows": [],
+                     "balance": {"amount": 19.39, "currency": "USD", "granted": 0.0,
+                                 "topped_up": 19.39, "available": True}},
     }
 
 
@@ -536,10 +611,27 @@ def error_of(st):
     return err if isinstance(err, dict) else None
 
 
+def balance_of(st):
+    bal = st.get("balance")
+    return bal if isinstance(bal, dict) and isinstance(bal.get("amount"), (int, float)) else None
+
+
+SYMBOL = {"USD": "$", "EUR": "€", "CNY": "¥", "JPY": "¥"}
+
+
+def amount_text(bal, value):
+    cur = bal.get("currency") or ""
+    return f"{SYMBOL.get(cur, cur + ' ' if cur else '')}{value:.2f}"
+
+
+def balance_text(bal):
+    return amount_text(bal, bal["amount"])
+
+
 def shown(data):
     # hide a provider the user never signed into; keep one that is loading or failing
-    return [p for p in PROVIDERS
-            if windows_now(data.get(p, {}), 0) or (error_of(data.get(p, {})) or {}).get("code") != "nologin"]
+    return [p for p in PROVIDERS if windows_now(data.get(p, {}), 0) or balance_of(data.get(p, {}))
+            or (error_of(data.get(p, {})) or {}).get("code") != "nologin"]
 
 
 def windows_now(st, now):
@@ -580,7 +672,7 @@ def label(w, t):
     return f"{base} · {w['model']}" if w.get("model") else base
 
 
-ERRORS = ("expired", "limited", "http", "network", "format", "nologin", "unexpected")
+ERRORS = ("expired", "limited", "http", "network", "format", "nologin", "badkey", "unexpected")
 
 
 def error_text(err, t):
@@ -596,11 +688,15 @@ def bar_text(data, now, view):
     for p in shown(data):
         st = data.get(p, {})
         wins = windows_now(st, now)
-        if not wins:
+        bal = balance_of(st)
+        stale = "~" if now - st.get("fetched_at", 0) > STALE_AFTER else ""
+        if not wins and not bal:
             parts.append(f"{view.mark(p)} –")
             continue
+        if bal:
+            parts.append(f"{view.mark(p)} {stale}{balance_text(bal)} {view.t['left']}")
+            continue
         w = headline(wins)
-        stale = "~" if now - st.get("fetched_at", 0) > STALE_AFTER else ""
         reset = f" {left(w['resets_at'], now)}" if w["resets_at"] else ""
         parts.append(f"{view.mark(p)} {stale}{round(w['used'])}% {view.t['used']}{reset}")
     return "   ".join(parts)
@@ -608,7 +704,7 @@ def bar_text(data, now, view):
 
 RGB = {"fg": (192, 202, 245), "dim": (110, 118, 150), "track": (59, 66, 97), "green": (158, 206, 106),
        "yellow": (224, 175, 104), "red": (247, 118, 142), "claude": (217, 119, 87),
-       "codex": (236, 236, 241), "zai": (75, 124, 255)}
+       "codex": (236, 236, 241), "zai": (75, 124, 255), "deepseek": (77, 107, 254)}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -654,6 +750,7 @@ def panel_lines(data, now, mode, busy, W, view):
     for p in shown(data):
         st = data.get(p, {})
         wins = windows_now(st, now)
+        bal = balance_of(st)
         icon = fg(p, NERD_ICON[p]) + "  " if view.nerd else ""
         title = f"{icon}{bold(fg('fg', NAME[p]))}  {fg('dim', st.get('plan') or '')}"
         if wins:
@@ -662,9 +759,18 @@ def panel_lines(data, now, mode, busy, W, view):
             lines.append(row(title, reset + bold(fg(sev(h["used"]), f"{round(h['used']):>3}%")), W))
             if mode == "detail":
                 lines += [window_row(w, now, W, t) for w in wins]
+        elif bal:
+            color = "green" if bal.get("available", True) else "red"
+            lines.append(row(title, bold(fg(color, balance_text(bal))), W))
+            if mode == "detail":
+                parts = [t["topped"].format(amount=amount_text(bal, bal.get("topped_up", 0)))]
+                if bal.get("granted"):
+                    parts.append(t["granted"].format(amount=amount_text(bal, bal["granted"])))
+                lines.append("    " + fg("dim", pad(t["balance"], 14)) + " " + fg("fg", balance_text(bal))
+                             + "  " + fg("dim", " · ".join(parts)))
         else:
             lines.append(row(title, fg("dim", t["loading"] if busy else "–"), W))
-        if error_of(st) and (mode == "detail" or not wins):
+        if error_of(st) and (mode == "detail" or not (wins or bal)):
             old = fg("dim", " · " + t["as_of"].format(ago=ago(st["fetched_at"], now, t))) if st.get("fetched_at") else ""
             lines.append("    " + fg("red", "⚠ " + error_text(error_of(st), t)) + old)
         if mode == "detail":
