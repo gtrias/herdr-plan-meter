@@ -545,6 +545,27 @@ class TokenRefresh(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("Bearer refreshed", calls[1])
 
+    def test_401_retry_hits_the_same_usage_endpoint(self):
+        calls = []
+        creds = json.loads((Path(self.cfg) / ".credentials.json").read_text())
+        creds["claudeAiOauth"]["expiresAt"] = int((time.time() + 3600) * 1000)
+        (Path(self.cfg) / ".credentials.json").write_text(json.dumps(creds))
+
+        def http_side_effect(url, headers, cli):
+            calls.append(url)
+            if len(calls) == 1:
+                raise meter.FetchError("expired", cli="Claude Code")
+            return CLAUDE
+
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cfg}), \
+                mock.patch.object(meter, "http_json", side_effect=http_side_effect), \
+                mock.patch.object(meter, "claude_refresh", return_value={
+                    "accessToken": "refreshed", "subscriptionType": "pro",
+                    "rateLimitTier": "default_claude_max_5x"}):
+            meter.fetch_claude()
+        self.assertEqual(calls, [meter.CLAUDE_USAGE_URL, meter.CLAUDE_USAGE_URL])
+        self.assertEqual(meter.CLAUDE_USAGE_URL, "https://api.anthropic.com/api/oauth/usage")
+
 
 class EventHook(unittest.TestCase):
     def run_event(self, status):
