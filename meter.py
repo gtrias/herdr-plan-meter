@@ -345,20 +345,28 @@ def parse_claude(d):
     return wins
 
 
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+
+
+def claude_usage(oauth):
+    """One usage call with this access token. fetch_claude retries with a refreshed
+    token on expiry, so the request shape lives here — once — not in each branch."""
+    return http_json(CLAUDE_USAGE_URL,
+                     {"Authorization": f"Bearer {oauth['accessToken']}",
+                      "anthropic-beta": "oauth-2025-04-20"},
+                     "Claude Code")
+
+
 def fetch_claude():
     oauth, cfg = claude_oauth()
     if oauth.get("expiresAt") and oauth["expiresAt"] / 1000 < time.time():
         oauth = claude_refresh(oauth, cfg)
     try:
-        d = http_json("https://api.anthropic.com/api/oauth/usage",
-                      {"Authorization": f"Bearer {oauth['accessToken']}", "anthropic-beta": "oauth-2025-04-20"},
-                      "Claude Code")
+        d = claude_usage(oauth)
     except FetchError as e:
         if e.code == "expired" and oauth.get("refreshToken"):
             oauth = claude_refresh(oauth, cfg)
-            d = http_json("https://api.anthropic.com/api/oauth/usage",
-                          {"Authorization": f"Bearer {oauth['accessToken']}", "anthropic-beta": "oauth-2025-04-20"},
-                          "Claude Code")
+            d = claude_usage(oauth)
         else:
             raise
     return {"plan": claude_plan(oauth), "windows": parse_claude(d)}
