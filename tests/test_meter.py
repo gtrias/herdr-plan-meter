@@ -106,6 +106,38 @@ class Parsing(unittest.TestCase):
         )
         self.assertEqual(result["windows"], [{"kind": "session", "used": 37.5, "resets_at": None}])
 
+    def test_fetch_codex_reads_auth_json_and_calls_usage_endpoint(self):
+        with tempfile.TemporaryDirectory() as home:
+            auth_path = Path(home) / "auth.json"
+            auth_path.write_text(json.dumps({
+                "tokens": {"access_token": "sk-codex", "account_id": "acct-1"}}))
+            with mock.patch.dict(os.environ, {"CODEX_HOME": home}), \
+                    mock.patch.object(meter, "http_json", return_value=CODEX) as request:
+                result = meter.fetch_codex()
+        request.assert_called_once_with(
+            "https://chatgpt.com/backend-api/wham/usage",
+            {"Authorization": "Bearer sk-codex", "ChatGPT-Account-Id": "acct-1"},
+            "Codex",
+        )
+        self.assertEqual(result["plan"], "Plus")
+        self.assertEqual([(w["kind"], w["used"]) for w in result["windows"]],
+                         [("session", 0), ("weekly", 4)])
+
+    def test_fetch_codex_without_account_id_omits_the_header(self):
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "auth.json").write_text(json.dumps({"tokens": {"access_token": "sk-codex"}}))
+            with mock.patch.dict(os.environ, {"CODEX_HOME": home}), \
+                    mock.patch.object(meter, "http_json", return_value=CODEX) as request:
+                meter.fetch_codex()
+        self.assertEqual(request.call_args[0][1], {"Authorization": "Bearer sk-codex"})
+
+    def test_fetch_codex_without_auth_is_nologin(self):
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.dict(os.environ, {"CODEX_HOME": home}):
+            with self.assertRaises(meter.FetchError) as ctx:
+                meter.fetch_codex()
+        self.assertEqual(ctx.exception.code, "nologin")
+
     def test_window_kind(self):
         self.assertEqual(meter.window_kind(None, "weekly"), {"kind": "weekly"})
         self.assertEqual(meter.window_kind(3 * 3600, "session"), {"kind": "hours", "n": 3})
