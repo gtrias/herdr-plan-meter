@@ -401,6 +401,21 @@ class Rendering(unittest.TestCase):
                 "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 0% used")
 
+    def test_valid_windows_drops_malformed_rows(self):
+        st = {"windows": [{"kind": "session", "used": 42, "resets_at": NOW + 60}, "junk",
+                          {"kind": "weekly", "used": "n/a"}, [1, 2], None]}
+        self.assertEqual(meter.valid_windows(st), [{"kind": "session", "used": 42, "resets_at": NOW + 60}])
+
+    def test_valid_windows_tolerates_missing_or_non_list_windows(self):
+        self.assertEqual(meter.valid_windows({}), [])
+        self.assertEqual(meter.valid_windows({"windows": "oops"}), [])
+
+    def test_shown_uses_valid_rows_regardless_of_reset_times(self):
+        # a provider whose every window already reset still counts as signed in
+        data = {"claude": reading([{"kind": "session", "used": 90, "resets_at": NOW - 1}]),
+                "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN}
+        self.assertEqual(meter.shown(data), ["claude"])
+
     def test_provider_without_login_is_hidden(self):
         data = {"claude": reading([{"kind": "weekly", "used": 5, "resets_at": None}]),
                 "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN}

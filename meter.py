@@ -638,15 +638,20 @@ def balance_text(bal):
 
 def shown(data):
     # hide a provider the user never signed into; keep one that is loading or failing
-    return [p for p in PROVIDERS if windows_now(data.get(p, {}), 0) or balance_of(data.get(p, {}))
+    return [p for p in PROVIDERS if valid_windows(data.get(p, {})) or balance_of(data.get(p, {}))
             or (error_of(data.get(p, {})) or {}).get("code") != "nologin"]
 
 
-def windows_now(st, now):
-    # skip malformed entries; a window whose reset time has passed has started over — show 0
+def valid_windows(st):
+    # the one validity predicate for cached window rows: malformed entries never reach rendering
     wins = st.get("windows") if isinstance(st.get("windows"), list) else []
+    return [w for w in wins if isinstance(w, dict) and isinstance(w.get("used"), (int, float))]
+
+
+def windows_now(st, now):
+    # a window whose reset time has passed has started over — show 0
     return [{**w, "used": 0, "resets_at": None} if w.get("resets_at") and w["resets_at"] <= now else w
-            for w in wins if isinstance(w, dict) and isinstance(w.get("used"), (int, float))]
+            for w in valid_windows(st)]
 
 
 def headline(wins):
