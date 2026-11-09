@@ -543,8 +543,8 @@ BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.3
 QWEN_CONSOLES = {
     "alibaba": {  # Alibaba Cloud Model Studio, International (Singapore)
         "origin": "https://modelstudio.console.alibabacloud.com",
-        "dashboard": "https://modelstudio.console.alibabacloud.com/ap-southeast-1/?tab=plan"
-                     "#/efm/subscription/token-plan/personal",
+        "dashboard": "https://modelstudio.console.alibabacloud.com/ap-southeast-1"
+                     "/subscription/token-plan/personal",
         "session": "https://modelstudio.console.alibabacloud.com/tool/user/info.json",
         "usage": "https://bailian-singapore-cs.alibabacloud.com/data/api.json"
                  "?action=IntlBroadScopeAspnGateway&product=sfm_bailian&api="
