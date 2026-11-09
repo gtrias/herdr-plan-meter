@@ -18,7 +18,7 @@ Plan Meter reads subscription credentials that belong to other tools, so here is
 - Codex: `https://chatgpt.com/backend-api/wham/usage`, sent as a `Bearer` token plus `ChatGPT-Account-Id`
 - Z.AI: `https://api.z.ai/api/monitor/usage/quota/limit`, sent in the `Authorization` header
 - DeepSeek: `https://api.deepseek.com/user/balance`, sent as a `Bearer` token
-- Alibaba Token Plan: `https://cs-data.qwencloud.com/data/api.json` (international) or `https://bailian-cs.console.aliyun.com/data/api.json` (China), with the console cookie and a per-session `sec_token`; the plan's own API key is never sent, it cannot see quota
+- Alibaba Token Plan: the plan portal's gateway — `bailian-singapore-cs.alibabacloud.com` (Model Studio International), `cs-data.qwencloud.com` (QwenCloud), or `bailian-cs.console.aliyun.com` (China Bailian) — with the console login cookie and, when it can be resolved, a per-session `sec_token`. The plan's own API key is never sent; it cannot see quota
 
 Nothing else leaves the machine. Redirects are refused, so a token can never follow a 3xx to another host. There is no telemetry and no third-party server.
 

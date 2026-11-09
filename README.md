@@ -81,7 +81,7 @@ icons = "text"  # text | nerd
 
 ### Brand icons
 
-`icons = "nerd"` replaces Claude and Codex names with Nerd Fonts 3.5 logos. Z.AI, DeepSeek, and Qwen fall back to their initial because Plan Meter does not bundle those glyphs.
+`icons = "nerd"` replaces Claude and Codex names with Nerd Fonts 3.5 logos. Z.AI, DeepSeek, and Alibaba fall back to their initial because Plan Meter does not bundle those glyphs.
 
 ```bash
 brew install --cask font-symbols-only-nerd-font
@@ -97,7 +97,7 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 | | Claude Code | Codex | Z.AI | DeepSeek | Alibaba Token Plan |
 |---|---|---|---|---|---|
 | Login it reads | Claude Code OAuth from macOS Keychain or `~/.claude/.credentials.json` on Linux; respects `CLAUDE_CONFIG_DIR`. | `$CODEX_HOME/auth.json` (default `~/.codex`) from a ChatGPT sign-in. | Pi's `auth.json` (`$PI_CODING_AGENT_DIR`, default `~/.pi/agent`), provider `zai`. | `$DEEPSEEK_API_KEY`, the plugin's `deepseek_key`, or omp's SQLite credential store (`$OMP_AGENT_DIR`, default `~/.omp/agent/agent.db`), provider `deepseek`. | `$ALIBABA_TOKEN_PLAN_API_KEY` / `$BAILIAN_TOKEN_PLAN_API_KEY` (JSON form with a `cookie`), the plugin's `alibaba_cookie`, or omp's credential store, provider `alibaba-token-plan`. |
-| Endpoint | `api.anthropic.com/api/oauth/usage` | `chatgpt.com/backend-api/wham/usage` | `api.z.ai/api/monitor/usage/quota/limit` | `api.deepseek.com/user/balance` | The QwenCloud console gateway (`cs-data.qwencloud.com/data/api.json`), or the Bailian console (`bailian-cs.console.aliyun.com`) for a China-region key |
+| Endpoint | `api.anthropic.com/api/oauth/usage` | `chatgpt.com/backend-api/wham/usage` | `api.z.ai/api/monitor/usage/quota/limit` | `api.deepseek.com/user/balance` | The console gateway of the portal that owns the plan: Alibaba Cloud Model Studio International (`bailian-singapore-cs.alibabacloud.com`), QwenCloud (`cs-data.qwencloud.com`), or China (Beijing) Bailian (`bailian-cs.console.aliyun.com`) — tried in the order the key's region suggests |
 | Windows | 5-hour, weekly, per-model weekly | 5-hour, weekly | 5-hour and weekly coding-plan limits | None: pay-as-you-go account balance | 5-hour and weekly credits; monthly when the plan only reports that |
 
 - **Tokens stay put.** Each fetch reads its credential, sends it only to that vendor's usage endpoint, and forgets it. Redirects are refused. Plan Meter never writes, caches, logs, prints, or refreshes credentials.
@@ -109,7 +109,7 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 - Claude and Codex usage endpoints are undocumented. Z.AI's quota endpoint is used by its [official GLM Coding Plan usage plugin](https://docs.z.ai/devpack/extension/usage-query-plugin), but returned quota fields vary by plan generation.
 - Z.AI `CREDIT_LIMIT` windows map `unit=3, number=5` to 5 hours and `unit=6, number=1` to weekly; the API may change.
 - DeepSeek publishes no usage or quota API, only the account balance, so Plan Meter shows the money left rather than a percentage.
-- The Token Plan quota lives in the console, not in the API key: the `sk-sp-…` key cannot see its own usage, so Plan Meter replays the console gateway call the dashboard makes, using the login cookie omp captured at `/login alibaba-token-plan`. The cookie expires like any browser session; re-run the omp login (or paste `alibaba_cookie` into the plugin config) when the popup says so.
+- The Token Plan quota lives in the console, not in the API key: the `sk-sp-…` key cannot see its own usage, so Plan Meter replays the gateway call the plan dashboard makes, using the login cookie omp captured at `/login alibaba-token-plan`. The cookie must come from the portal where the plan is actually visible — International keys are served by `modelstudio.console.alibabacloud.com` (the QwenCloud portal is its rebrand and is tried as a fallback), China keys by `bailian.console.aliyun.com`. A cookie from aliyun.com alone is not a console session. The cookie expires like any browser session; re-run the omp login (or paste `alibaba_cookie` into the plugin config) when the popup says so.
 - **A gray area.** Plan Meter sends Claude Code's OAuth token to Anthropic's usage endpoint outside Claude Code. It only reads quota and makes no model requests; check your applicable terms.
 - On macOS, the first Claude credential read may prompt for Keychain access.
 - Plan Meter is not affiliated with Anthropic, OpenAI, Z.AI, DeepSeek, Alibaba, or herdr.
@@ -122,8 +122,8 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 | "Login expired" for Claude | Start Claude Code once. It refreshes its own token and the next poll picks it up. |
 | Z.AI is missing | Sign into Z.AI in Pi; Plan Meter reads `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`) and needs its `zai` key. |
 | DeepSeek is missing | Plan Meter needs `$DEEPSEEK_API_KEY`, `deepseek_key` in the plugin config, or a `deepseek` API key in omp's credential store (`~/.omp/agent/agent.db`). |
-| Qwen is missing | Plan Meter needs a Token Plan login **with its console cookie**: run `/login alibaba-token-plan` in omp and paste the `Cookie:` header from the `cs-data.qwencloud.com/data/api.json` request when prompted, or set `alibaba_cookie` in the plugin config. |
-| Qwen says "Console session expired" | The captured cookie died. Sign in at `home.qwencloud.com`, re-copy the cookie, and re-run the omp login. |
+| Alibaba is missing | Plan Meter needs a Token Plan login **with its console cookie**: run `/login alibaba-token-plan` in omp and paste the `Cookie:` header from the `bailian-singapore-cs.alibabacloud.com/data/api.json` request when prompted, or set `alibaba_cookie` in the plugin config. |
+| Alibaba says "Console session expired" | The captured cookie is not a session on the plan's console. Sign in at `modelstudio.console.alibabacloud.com` (or `home.qwencloud.com`), re-copy the cookie from the usage request in DevTools, and re-run the omp login. |
 | A plan is missing | Plans without a subscription login are hidden. API-key logins have no Claude or Codex subscription limits. |
 | A box or a CJK glyph instead of a logo | Your font lacks Nerd Fonts 3.5 glyphs. See [Brand icons](#brand-icons), or set `icons = "text"`. |
 | Logs | `herdr plugin log list --plugin gtrias.plan-meter` |
@@ -142,7 +142,7 @@ After uninstalling, remove the snippet from `config.toml` and delete `~/.cache/h
 - herdr 0.9 or later (popup panes, `tab_bar_right` command entries)
 - Python 3.9 or later, standard library only
 - macOS or Linux. On Linux, only the sample-data tests run in CI; it has not been tried with a live account.
-- Claude Code and/or Codex CLI signed in with a subscription; Pi signed in to Z.AI GLM Coding Plan for the Z.AI meter; a DeepSeek API key for the DeepSeek balance; an omp `alibaba-token-plan` login with its console cookie for the Qwen Token Plan meter
+- Claude Code and/or Codex CLI signed in with a subscription; Pi signed in to Z.AI GLM Coding Plan for the Z.AI meter; a DeepSeek API key for the DeepSeek balance; an omp `alibaba-token-plan` login with its console cookie for the Alibaba Token Plan meter
 
 ## Try it without an account
 

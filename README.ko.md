@@ -81,7 +81,7 @@ icons = "text"  # text | nerd
 
 ### 브랜드 아이콘
 
-`icons = "nerd"`는 Claude와 Codex 이름을 Nerd Fonts 3.5 로고로 바꿉니다. Z.AI·DeepSeek·Qwen은 내장 글리프가 없어 이니셜로 표시합니다.
+`icons = "nerd"`는 Claude와 Codex 이름을 Nerd Fonts 3.5 로고로 바꿉니다. Z.AI·DeepSeek·Alibaba는 내장 글리프가 없어 이니셜로 표시합니다.
 
 ```bash
 brew install --cask font-symbols-only-nerd-font
@@ -97,7 +97,7 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 | | Claude Code | Codex | Z.AI | DeepSeek | Alibaba Token Plan |
 |---|---|---|---|---|---|
 | 읽는 로그인 | Claude Code OAuth. macOS Keychain 또는 Linux `~/.claude/.credentials.json`; `CLAUDE_CONFIG_DIR` 지원. | ChatGPT 로그인으로 생긴 `$CODEX_HOME/auth.json` (기본 `~/.codex`) | Pi의 `auth.json` (`$PI_CODING_AGENT_DIR`, 기본 `~/.pi/agent`), `zai` provider | `$DEEPSEEK_API_KEY`, 플러그인 설정의 `deepseek_key`, 또는 omp의 SQLite 자격 증명 저장소(`$OMP_AGENT_DIR`, 기본 `~/.omp/agent/agent.db`)의 `deepseek` provider | `$ALIBABA_TOKEN_PLAN_API_KEY` / `$BAILIAN_TOKEN_PLAN_API_KEY`(cookie 포함 JSON 형식), 플러그인 설정의 `alibaba_cookie`, 또는 omp 자격 증명 저장소의 `alibaba-token-plan` provider |
-| 엔드포인트 | `api.anthropic.com/api/oauth/usage` | `chatgpt.com/backend-api/wham/usage` | `api.z.ai/api/monitor/usage/quota/limit` | `api.deepseek.com/user/balance` | QwenCloud 콘솔 게이트웨이(`cs-data.qwencloud.com/data/api.json`), 중국 지역 키는 Bailian 콘솔(`bailian-cs.console.aliyun.com`) |
+| 엔드포인트 | `api.anthropic.com/api/oauth/usage` | `chatgpt.com/backend-api/wham/usage` | `api.z.ai/api/monitor/usage/quota/limit` | `api.deepseek.com/user/balance` | 요금제가 속한 콘솔 게이트웨이: 알리바바 클라우드 Model Studio 국제(`bailian-singapore-cs.alibabacloud.com`), QwenCloud(`cs-data.qwencloud.com`), 중국(베이징) Bailian(`bailian-cs.console.aliyun.com`) — 키 지역에 따라 순서대로 시도 |
 | 한도 창 | 5시간, 주간, 모델별 주간 | 5시간, 주간 | Coding Plan 5시간, 주간 | 없음: 선불 계정 잔액 | 5시간·주간 크레딧, 월별만 보고하는 요금제는 월별 |
 
 - **토큰은 제자리에.** 조회할 때마다 각 도구의 인증 정보를 읽어 해당 회사의 사용량 엔드포인트로만 보냅니다. 리다이렉트는 거부하며 토큰을 저장·기록·출력·갱신하지 않습니다.
@@ -109,7 +109,7 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 - Claude와 Codex 사용량 엔드포인트는 비공개입니다. Z.AI 엔드포인트는 공식 [GLM Coding Plan 사용량 플러그인](https://docs.z.ai/devpack/extension/usage-query-plugin)에서 사용하지만, 요금제 버전에 따라 응답 형식이 달라질 수 있습니다.
 - Z.AI `CREDIT_LIMIT`은 `unit=3, number=5`를 5시간, `unit=6, number=1`을 주간 한도로 해석합니다. API 형식은 바뀔 수 있습니다.
 - DeepSeek은 사용량·한도 API를 공개하지 않고 계정 잔액만 제공하므로, 비율 대신 남은 금액을 보여 줍니다.
-- Token Plan 한도는 API 키가 아니라 콘솔에 있습니다: `sk-sp-…` 키는 자기 사용량을 볼 수 없으므로, Plan Meter는 `/login alibaba-token-plan` 때 omp가 저장한 콘솔 쿠키로 대시보드가 호출하는 게이트웨이 요청을 재현합니다. 쿠키는 브라우저 세션처럼 만료됩니다. 팝업에 만료 표시가 뜨면 omp 로그인을 다시 실행하거나, 플러그인 설정에 `alibaba_cookie`를 직접 넣으세요.
+- Token Plan 한도는 API 키가 아니라 콘솔에 있습니다: `sk-sp-…` 키는 자기 사용량을 볼 수 없으므로, Plan Meter는 `/login alibaba-token-plan` 때 omp가 저장한 콘솔 쿠키로 대시보드가 호출하는 게이트웨이 요청을 재현합니다. 쿠키는 실제로 요금제가 보이는 포털에서 가져와야 합니다 — 국제 키는 `modelstudio.console.alibabacloud.com`(QwenCloud 포털은 그 리브랜딩이라 대체로 시도), 중국 키는 `bailian.console.aliyun.com`. aliyun.com 쿠키만으로는 콘솔 세션이 아닙니다. 쿠키는 브라우저 세션처럼 만료됩니다. 팝업에 만료 표시가 뜨면 omp 로그인을 다시 실행하거나, 플러그인 설정에 `alibaba_cookie`를 직접 넣으세요.
 - **주의가 필요한 방식.** Claude Code OAuth 토큰을 Claude Code 외부에서 Anthropic 사용량 엔드포인트로 보냅니다. 사용량만 읽고 모델 요청은 하지 않지만, 적용되는 약관을 확인하세요.
 - macOS에서 Claude 자격 증명을 처음 읽을 때 Keychain 접근 허용 창이 뜰 수 있습니다.
 - Plan Meter는 Anthropic, OpenAI, Z.AI, DeepSeek, 알리바바, herdr와 제휴 관계가 없습니다.
@@ -122,8 +122,8 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font Mono
 | Claude가 "로그인 만료" | Claude Code를 한 번 실행하세요. 스스로 토큰을 갱신하고 다음 조회에 반영됩니다. |
 | Z.AI가 없음 | Pi에서 Z.AI에 로그인했는지 확인하세요. `$PI_CODING_AGENT_DIR/auth.json`(기본 `~/.pi/agent/auth.json`)의 `zai.key`를 읽습니다. |
 | DeepSeek이 없음 | `$DEEPSEEK_API_KEY`, 플러그인 설정의 `deepseek_key`, 또는 omp 자격 증명 저장소(`~/.omp/agent/agent.db`)의 `deepseek` API 키가 필요합니다. |
-| Qwen이 없음 | **콘솔 쿠키가 있는** Token Plan 로그인이 필요합니다: omp에서 `/login alibaba-token-plan`을 실행하고 안내에 따라 `cs-data.qwencloud.com/data/api.json` 요청의 `Cookie:` 헤더를 붙여 넣거나, 플러그인 설정에 `alibaba_cookie`를 넣으세요. |
-| Qwen이 "콘솔 세션 만료" | 저장된 쿠키가 죽었습니다. `home.qwencloud.com`에 로그인하고 쿠키를 다시 복사한 뒤 omp 로그인을 재실행하세요. |
+| Alibaba가 없음 | **콘솔 쿠키가 있는** Token Plan 로그인이 필요합니다: omp에서 `/login alibaba-token-plan`을 실행하고 안내에 따라 `bailian-singapore-cs.alibabacloud.com/data/api.json` 요청의 `Cookie:` 헤더를 붙여 넣거나, 플러그인 설정에 `alibaba_cookie`를 넣으세요. |
+| Alibaba가 "콘솔 세션 만료" | 저장된 쿠키가 요금제 콘솔의 세션이 아닙니다. `modelstudio.console.alibabacloud.com`(또는 `home.qwencloud.com`)에서 로그인하고 DevTools의 사용량 요청에서 쿠키를 다시 복사한 뒤 omp 로그인을 재실행하세요. |
 | 요금제 하나가 안 보임 | 구독 로그인에 한도가 없으면 숨깁니다. Claude/Codex API 키 로그인은 구독 한도가 아닙니다. |
 | 로고 대신 네모나 한자가 보임 | 폰트에 Nerd Fonts 3.5 글리프가 없습니다. [브랜드 아이콘](#브랜드-아이콘)을 보거나 `icons = "text"`로 두세요. |
 | 로그 | `herdr plugin log list --plugin gtrias.plan-meter` |
@@ -142,7 +142,7 @@ herdr plugin uninstall gtrias.plan-meter
 - herdr 0.9 이상 (팝업 pane, `tab_bar_right` command 항목)
 - Python 3.9 이상, 표준 라이브러리만 사용
 - macOS 또는 Linux. Linux는 CI에서 샘플 데이터 테스트만 돌리고, 실제 계정으로는 아직 확인하지 않았습니다.
-- Claude Code/Codex 구독 로그인, Z.AI GLM Coding Plan에 로그인한 Pi, DeepSeek 잔액을 위한 API 키, Qwen Token Plan 미터를 위한 콘솔 쿠키가 있는 omp `alibaba-token-plan` 로그인 (각 사용량 계정에 한해 표시)
+- Claude Code/Codex 구독 로그인, Z.AI GLM Coding Plan에 로그인한 Pi, DeepSeek 잔액을 위한 API 키, Alibaba Token Plan 미터를 위한 콘솔 쿠키가 있는 omp `alibaba-token-plan` 로그인 (각 사용량 계정에 한해 표시)
 
 ## 계정 없이 써 보기
 

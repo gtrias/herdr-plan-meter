@@ -242,10 +242,10 @@ class QwenTokenPlan(unittest.TestCase):
     def test_credential_forms(self):
         with tempfile.TemporaryDirectory() as home:
             with self.env(home, key=json.dumps({"token": "sk-sp-x", "cookie": "a=1; b=2"})):
-                self.assertEqual(meter.qwen_credential(), ("a=1; b=2", "intl"))
+                self.assertEqual(meter.qwen_credential(), ("a=1; b=2", ["alibaba", "qwen"]))
             cn = json.dumps({"token": "sk-sp-x", "cookie": "a=1", "baseUrl": meter.QWEN_CN_BASE_URL})
             with self.env(home, key=cn):
-                self.assertEqual(meter.qwen_credential(), ("a=1", "cn"))
+                self.assertEqual(meter.qwen_credential(), ("a=1", ["cn"]))
             with self.env(home, key="sk-sp-bare-key-no-cookie"):
                 with self.assertRaises(meter.FetchError) as ctx:
                     meter.qwen_credential()
@@ -259,9 +259,9 @@ class QwenTokenPlan(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             cfg = Path(home) / "cfg"
             cfg.mkdir()
-            (cfg / "config.toml").write_text('alibaba_cookie = "c=3"\nalibaba_key = "sk-sp-x"\n')
+            (cfg / "config.toml").write_text('alibaba_cookie = "c=3"\nalibaba_console = "qwen"\n')
             with self.env(home):
-                self.assertEqual(meter.qwen_credential(), ("c=3", "intl"))
+                self.assertEqual(meter.qwen_credential(), ("c=3", ["qwen"]))
 
     def test_windows_from_the_current_envelope(self):
         wins = meter.parse_qwen(meter.qwen_unwrap(QWEN["data"]))
@@ -283,71 +283,99 @@ class QwenTokenPlan(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "format")
 
     def test_sec_token_sources(self):
-        console = meter.QWEN_CONSOLES["intl"]
+        console = meter.QWEN_CONSOLES["alibaba"]
         calls = []
 
-        def reply(url, headers, cli, body=None, agent=None):
-            calls.append(url)
-            return 200, json.dumps({"data": {"secToken": "tok-json"}})
-        with mock.patch.object(meter, "http_raw", side_effect=reply):
-            self.assertEqual(meter.qwen_sec_token(console, "cookie"), "tok-json")
-        self.assertEqual(calls, [console["session"]])
-
-        def html_pages(url, headers, cli, body=None, agent=None):
-            calls.append(url)
+        def html_page(url, headers, cli, body=None, agent=None):
+            calls.append((url, headers.get("Sec-Fetch-Mode")))
             if url == console["dashboard"]:
                 return 200, '<script>window.ALIYUN_CONSOLE_CONFIG={SEC_TOKEN:"tok-html"}</script>'
-            return 200, "<!doctype html><html><body>sign in</body></html>"  # no token anywhere
-        calls.clear()
-        with mock.patch.object(meter, "http_raw", side_effect=html_pages):
-            self.assertEqual(meter.qwen_sec_token(console, "cookie"), "tok-html")
-        self.assertEqual(calls, [console["session"], console["dashboard"]])
-
-        def dead(url, headers, cli, body=None, agent=None):
-            calls.append(url)
             return 200, '{"code":"ConsoleNeedLogin"}'
+        with mock.patch.object(meter, "http_raw", side_effect=html_page):
+            self.assertEqual(meter.qwen_sec_token(console, "cookie"), "tok-html")
+        # the shell only server-renders SEC_TOKEN for a request that looks like a document navigation
+        self.assertEqual(calls, [(console["dashboard"], "navigate")])
+
+        def user_info(url, headers, cli, body=None, agent=None):
+            calls.append(url)
+            if url == console["session"]:
+                return 200, json.dumps({"data": {"secToken": "tok-json"}})
+            return 200, "<html><body>a login page</body></html>"
         calls.clear()
-        with mock.patch.object(meter, "http_raw", side_effect=dead):
+        with mock.patch.object(meter, "http_raw", side_effect=user_info):
+            self.assertEqual(meter.qwen_sec_token(console, "cookie"), "tok-json")
+        self.assertEqual(calls, [console["dashboard"], console["session"]])
+
+        calls.clear()
+        with mock.patch.object(meter, "http_raw", side_effect=user_info):
             self.assertEqual(meter.qwen_sec_token(console, "sec_token=tok-cookie; a=1"), "tok-cookie")
-            self.assertEqual(calls, [console["session"], console["dashboard"]])
-            calls.clear()
-            with self.assertRaises(meter.FetchError) as ctx:
-                meter.qwen_sec_token(console, "a=1")
-        self.assertEqual(ctx.exception.code, "recookie")
+        self.assertEqual(calls, [])  # the cookie token wins and costs no request
+
+        dead = lambda url, headers, cli, body=None, agent=None: (200, '{"code":"ConsoleNeedLogin"}')
+        with mock.patch.object(meter, "http_raw", side_effect=dead):
+            self.assertIsNone(meter.qwen_sec_token(console, "a=1"))  # the gateway decides
 
     def test_fetch_reads_credential_and_calls_the_gateway(self):
         seen = []
 
         def reply(url, headers, cli, body=None, agent=None):
             seen.append((url, headers, body, agent))
-            if url == meter.QWEN_CONSOLES["intl"]["session"]:
-                return 200, json.dumps({"data": {"secToken": "tok+&="}})
+            if url == meter.QWEN_CONSOLES["alibaba"]["dashboard"]:
+                return 200, '<script>window.ALIYUN_CONSOLE_CONFIG={SEC_TOKEN:"tok+&="}</script>'
             return 200, json.dumps(QWEN)
         with tempfile.TemporaryDirectory() as home:
             with self.env(home, key=json.dumps(
-                    {"token": "sk-sp-x", "cookie": "login_aliyunid_csrf=tk; a=1"})), \
+                    {"token": "sk-sp-x", "cookie": "login_aliyunid_csrf=tk; cna=cn; a=1"})), \
                     mock.patch.object(meter, "http_raw", side_effect=reply):
                 result = meter.fetch_qwen()
         self.assertEqual(result["plan"], "Token Plan")
         self.assertEqual([(w["kind"], w["used"]) for w in result["windows"]],
                          [("session", 8.0), ("weekly", 31.0)])
         usage_url, headers, body, agent = seen[-1]
-        self.assertEqual(usage_url, meter.QWEN_CONSOLES["intl"]["usage"])
+        self.assertEqual(usage_url, meter.QWEN_CONSOLES["alibaba"]["usage"])
         self.assertEqual(agent, meter.BROWSER_UA)  # the console rejects a non-browser UA
         form = {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
         self.assertEqual(form["product"], "sfm_bailian")
         self.assertEqual(form["action"], "IntlBroadScopeAspnGateway")
         self.assertEqual(form["region"], "ap-southeast-1")
+        self.assertEqual(form["language"], "en-US")
         self.assertEqual(urllib.parse.unquote(form["sec_token"]), "tok+&=")
         params = json.loads(form["params"])
         self.assertEqual(params["Api"], meter.QWEN_USAGE_API)
-        self.assertEqual(params["Data"]["cornerstoneParam"]["consoleSite"], "QWENCLOUD")
-        self.assertEqual(headers["Cookie"], "login_aliyunid_csrf=tk; a=1")
+        cp = params["Data"]["cornerstoneParam"]
+        self.assertEqual(cp["consoleSite"], "MODELSTUDIO_ALBABACLOUD")  # Alibaba's live spelling
+        self.assertNotIn("switchAgent", cp)  # a captured one breaks every other account
+        self.assertEqual(cp["X-Anonymous-Id"], "cn")
+        self.assertEqual(headers["Cookie"], "login_aliyunid_csrf=tk; cna=cn; a=1")
         self.assertEqual(headers["x-xsrf-token"], "tk")
+
+    def test_fetch_tries_both_intl_portal_surfaces(self):
+        # the same plan is sold through the Alibaba Cloud console and its QwenCloud rebrand;
+        # only one of them knows the cookie, so the first denial is the other's chance
+        tried = []
+
+        def reply(url, headers, cli, body=None, agent=None):
+            if url in (meter.QWEN_CONSOLES["alibaba"]["dashboard"], meter.QWEN_CONSOLES["alibaba"]["usage"]):
+                tried.append("alibaba")
+                if url.endswith("api.json") or "api.json" in url:
+                    return 200, json.dumps({"data": {"success": False,
+                                                     "errorCode": "BailianGateway.Login.NotLogined"}})
+                return 200, "<html>no token</html>"
+            tried.append("qwen")
+            if url == meter.QWEN_CONSOLES["qwen"]["session"]:
+                return 200, json.dumps({"data": {"secToken": "tok"}})
+            return 200, json.dumps(QWEN)
+        with tempfile.TemporaryDirectory() as home:
+            with self.env(home, key='{"token": "sk", "cookie": "a=1"}'), \
+                    mock.patch.object(meter, "http_raw", side_effect=reply):
+                result = meter.fetch_qwen()
+        self.assertEqual(result["windows"][0]["used"], 8.0)
+        self.assertIn("alibaba", tried)
+        self.assertIn("qwen", tried)
 
     def test_fetch_console_login_expired(self):
         def reply(url, headers, cli, body=None, agent=None):
-            if url == meter.QWEN_CONSOLES["intl"]["session"]:
+            if "info.json" in url:
                 return 200, json.dumps({"data": {"secToken": "tok"}})
             return 200, json.dumps({"code": "200", "data": {"success": False,
                                                             "errorCode": "BailianGateway.Login.NotLogined"}})
@@ -360,7 +388,7 @@ class QwenTokenPlan(unittest.TestCase):
 
     def test_fetch_gateway_refused(self):
         def reply(url, headers, cli, body=None, agent=None):
-            if url == meter.QWEN_CONSOLES["cn"]["session"]:
+            if "info.json" in url:
                 return 200, '<script>SEC_TOKEN:"t"</script>'
             return 200, json.dumps({"data": {"success": False, "errorCode": "BailianGateway.Team.NotAuthorised"}})
         with tempfile.TemporaryDirectory() as home:
@@ -383,15 +411,15 @@ class QwenTokenPlan(unittest.TestCase):
         data = {"claude": NO_LOGIN, "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN,
                 "alibaba": reading([{"kind": "session", "used": 9, "resets_at": NOW + 2640},
                                     {"kind": "weekly", "used": 17, "resets_at": NOW + 2 * 86400}])}
-        self.assertEqual(meter.bar_text(data, NOW, EN), "Qwen 17% used 2d 0h")
-        self.assertEqual(meter.bar_text(data, NOW, KO), "Q  17% 사용 2d 0h")
+        self.assertEqual(meter.bar_text(data, NOW, EN), "Alibaba 17% used 2d 0h")
+        self.assertEqual(meter.bar_text(data, NOW, KO), "A  17% 사용 2d 0h")
 
     def test_alibaba_panel_detail(self):
         data = {"claude": NO_LOGIN, "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN,
                 "alibaba": {"plan": "Token Plan", "fetched_at": NOW - 20, "windows": [
                     {"kind": "session", "used": 8, "resets_at": NOW + 2640}]}}
         detail = meter.ANSI.sub("", "\n".join(meter.panel_lines(data, NOW, "detail", False, 62, EN)))
-        self.assertIn("Qwen  Token Plan", detail)
+        self.assertIn("Alibaba  Token Plan", detail)
         self.assertIn("5h", detail)
         self.assertIn("  8%", detail)
 
@@ -553,7 +581,7 @@ class Cache(unittest.TestCase):
         for text in ("[]", '{"claude": "x", "codex": {"windows": {"used": 1}, "error": "old"}}', "{"):
             meter.CACHE.write_text(text)
             data = meter.load()
-            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –   Z.AI –   DeepSeek –   Qwen –")
+            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –   Z.AI –   DeepSeek –   Alibaba –")
             meter.panel_lines(data, NOW, "detail", False, 62, EN)
 
 

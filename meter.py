@@ -61,8 +61,8 @@ CONNECT_TIMEOUT = 3  # per address: a dead IPv6 route must not eat the deadline 
 STALE_AFTER = 900    # no successful fetch for 15 minutes: prefix the tab bar number with ~
 DEMO = os.environ.get("PLAN_METER_DEMO") == "1"
 PROVIDERS = ("claude", "codex", "zai", "deepseek", "alibaba")
-NAME = {"claude": "Claude", "codex": "Codex", "zai": "Z.AI", "deepseek": "DeepSeek", "alibaba": "Qwen"}
-NERD_ICON = {"claude": "\uec82", "codex": "\uec81", "zai": "Z", "deepseek": "D", "alibaba": "Q"}  # Text fallback; no bundled glyph.
+NAME = {"claude": "Claude", "codex": "Codex", "zai": "Z.AI", "deepseek": "DeepSeek", "alibaba": "Alibaba"}
+NERD_ICON = {"claude": "\uec82", "codex": "\uec81", "zai": "Z", "deepseek": "D", "alibaba": "A"}  # Text fallback; no bundled glyph.
 
 TEXT = {
     "en": {
@@ -528,45 +528,71 @@ def fetch_deepseek():
     return {"plan": "API", "windows": [], "balance": parse_deepseek(d)}
 
 
-# ── Alibaba Token Plan (QwenCloud / Bailian console) ───────────────────
 # The plan's API key cannot see its own quota: the numbers live in the console
 # gateway the dashboard calls, which answers to the login cookie, not the key.
+# The same plan is sold through three portals — Alibaba Cloud Model Studio
+# (Singapore), its QwenCloud rebrand, and the China (Beijing) Bailian console —
+# each with its own gateway host and consoleSite, and each portal's session lives
+# only on its own cookies. The credential's region picks the first to try; the
+# rest are fallbacks until one recognises the cookie.
 QWEN_USAGE_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage"
 QWEN_CN_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 QWEN_CONSOLES = {
-    "intl": {
+    "alibaba": {  # Alibaba Cloud Model Studio, International (Singapore)
+        "origin": "https://modelstudio.console.alibabacloud.com",
+        "dashboard": "https://modelstudio.console.alibabacloud.com/ap-southeast-1/?tab=plan"
+                     "#/efm/subscription/token-plan/personal",
+        "session": "https://modelstudio.console.alibabacloud.com/tool/user/info.json",
+        "usage": "https://bailian-singapore-cs.alibabacloud.com/data/api.json"
+                 "?action=IntlBroadScopeAspnGateway&product=sfm_bailian&api="
+                 + urllib.parse.quote(QWEN_USAGE_API, safe="") + "&_v=undefined",
+        "action": "IntlBroadScopeAspnGateway", "region": "ap-southeast-1", "language": "en-US",
+        "feURL": True, "trace": True,
+        # no hardcoded switchAgent: it pins the call to one account's workspace and makes
+        # every other account fail Workspace.NotAuthorised (CodexBar's live contract)
+        "cornerstone": {"protocol": "V2", "console": "ONE_CONSOLE", "productCode": "p_efm",
+                        "switchUserType": 3, "domain": "modelstudio.console.alibabacloud.com",
+                        # Alibaba's historical misspelling, part of the live contract
+                        "consoleSite": "MODELSTUDIO_ALBABACLOUD", "userNickName": "",
+                        "userPrincipalName": "", "xsp_lang": "en-US"},
+    },
+    "qwen": {  # QwenCloud, the rebranded international portal
         "origin": "https://home.qwencloud.com",
         "dashboard": "https://home.qwencloud.com/billing/subscription/token-plan-individual",
         "session": "https://home.qwencloud.com/tool/user/info.json",
         "usage": "https://cs-data.qwencloud.com/data/api.json?product=sfm_bailian"
                  "&action=IntlBroadScopeAspnGateway&api=" + urllib.parse.quote(QWEN_USAGE_API, safe=""),
-        "action": "IntlBroadScopeAspnGateway", "region": "ap-southeast-1",
+        "action": "IntlBroadScopeAspnGateway", "region": "ap-southeast-1", "language": None,
+        "feURL": False, "trace": False,
         "cornerstone": {"domain": "home.qwencloud.com", "consoleSite": "QWENCLOUD", "console": "ONE_CONSOLE",
                         "xsp_lang": "en-US", "protocol": "V2", "productCode": "p_efm"},
     },
-    "cn": {
+    "cn": {  # Bailian, China (Beijing) console — a region-locked sibling product
         "origin": "https://bailian.console.aliyun.com",
-        "dashboard": "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
+        "dashboard": "https://bailian.console.aliyun.com/cn-beijing?tab=plan"
+                     "#/efm/subscription/token-plan/personal",
         "session": "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
         "usage": "https://bailian-cs.console.aliyun.com/data/api.json?action=BroadScopeAspnGateway"
                  "&product=sfm_bailian&api=" + urllib.parse.quote(QWEN_USAGE_API, safe=""),
-        "action": "BroadScopeAspnGateway", "region": "cn-beijing",
-        "cornerstone": {"feURL": "https://bailian.console.aliyun.com/cn-beijing?tab=plan"
-                                  "#/efm/subscription/token-plan/personal",
-                        "protocol": "V2", "console": "ONE_CONSOLE", "productCode": "p_efm",
-                        "switchAgent": 12608464, "switchUserType": 3,
-                        "domain": "bailian.console.aliyun.com", "consoleSite": "BAILIAN_ALIYUN",
-                        "userNickName": "", "userPrincipalName": "", "xsp_lang": "zh-CN"},
+        "action": "BroadScopeAspnGateway", "region": "cn-beijing", "language": None,
+        "feURL": True, "trace": True,
+        "cornerstone": {"protocol": "V2", "console": "ONE_CONSOLE", "productCode": "p_efm",
+                        "switchUserType": 3, "domain": "bailian.console.aliyun.com",
+                        "consoleSite": "BAILIAN_ALIYUN", "userNickName": "", "userPrincipalName": "",
+                        "xsp_lang": "zh-CN"},
     },
 }
 
 
 def qwen_credential():
-    """(cookie, console key). The Token Plan credential omp stores is the JSON form the
+    """(cookie, candidate console keys). The Token Plan credential omp stores is the JSON form the
     console login writes: {"token":…, "cookie":…, "baseUrl":…}; a bare sk-… key has no
-    quota access, so it is not enough here. The plugin config can supply either form."""
+    quota access, so it is not enough here. The plugin config can supply either form.
+    The credential's region orders the portals to try: a China (Beijing) key is only ever on
+    the Bailian console, an international key lives on the Alibaba Cloud Model Studio console
+    or its QwenCloud rebrand, and the two share a cookie realm only by luck."""
     key = (os.environ.get("ALIBABA_TOKEN_PLAN_API_KEY") or os.environ.get("BAILIAN_TOKEN_PLAN_API_KEY")
            or omp_api_key("alibaba-token-plan"))
     cfg = load_config()
@@ -579,7 +605,14 @@ def qwen_credential():
     base_url = cfg.get("alibaba_base_url") or (blob.get("baseUrl") if isinstance(blob, dict) else None)
     if not isinstance(cookie, str) or not cookie.strip():
         raise FetchError("nologin")
-    return cookie.strip(), "cn" if base_url == QWEN_CN_BASE_URL else "intl"
+    forced = cfg.get("alibaba_console")
+    if forced in QWEN_CONSOLES:
+        order = [forced]
+    elif base_url == QWEN_CN_BASE_URL:
+        order = ["cn"]
+    else:
+        order = ["alibaba", "qwen"]
+    return cookie.strip(), order
 
 
 def qwen_cookie_value(cookie, name):
@@ -591,32 +624,39 @@ def qwen_cookie_value(cookie, name):
 
 
 def qwen_sec_token(console, cookie):
-    """The gateway needs a per-session security token. The consoles hand it out three
-    ways and which one answers depends on the plan generation: JSON `secToken` from the
-    user-info endpoint, a `SEC_TOKEN` literal in the console HTML, or a `sec_token`
-    cookie. Every route that fails is a 3xx or a login page, which is refused as a
-    redirect by the opener; none of them proves the cookie dead on its own."""
-    sources = [(console["session"], "application/json, text/plain, */*"),
-               (console["dashboard"], "text/html,application/xhtml+xml,*/*;q=0.8")]
-    for url, accept in sources:
-        try:
-            _, text = http_raw(url, {"Accept": accept, "Cookie": cookie,
-                                     "Referer": console["origin"] + "/"}, "Qwen Token Plan", agent=BROWSER_UA)
-        except FetchError:
-            continue
-        try:
-            token = json.loads(text).get("data", {}).get("secToken")
-            if isinstance(token, str) and token:
-                return token
-        except (ValueError, AttributeError):
-            pass
-        token = re.search(r'\bSEC_TOKEN\s*[:=]\s*"([^"]+)"', text)
-        if token:
-            return token.group(1)
+    """The gateway's per-session security token, best effort in the order the real
+    dashboard uses: a `sec_token` cookie, the shell HTML fetched with browser navigation
+    headers (it server-renders `SEC_TOKEN` only for what looks like a document
+    navigation), then JSON `secToken` from the user-info endpoint. None is allowed: the
+    Personal gateway serves some accounts on cookie alone; the request itself decides."""
     token = qwen_cookie_value(cookie, "sec_token")
-    if not token:
-        raise FetchError("recookie", cli="Qwen Token Plan")
-    return token
+    if token:
+        return token
+    nav = {"Cookie": cookie, "User-Agent": BROWSER_UA,
+           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+           "Referer": console["origin"] + "/", "Sec-Fetch-Site": "same-origin",
+           "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",
+           "Accept-Language": "en-US,en;q=0.9"}
+    try:
+        _, text = http_raw(console["dashboard"], nav, "Alibaba Token Plan")
+    except FetchError:
+        text = ""
+    token = re.search(r'\bSEC[_-]TOKEN\s*[:=]\s*["\']([^"\']+)["\']', text)
+    if token:
+        return token.group(1)
+    try:
+        _, text = http_raw(console["session"], {"Accept": "application/json, text/plain, */*",
+                                                "Cookie": cookie, "Referer": console["origin"] + "/"},
+                           "Alibaba Token Plan", agent=BROWSER_UA)
+        data = json.loads(text).get("data")
+        if isinstance(data, str):
+            with contextlib.suppress(ValueError):
+                data = json.loads(data)
+        if isinstance(data, dict) and isinstance(data.get("secToken"), str) and data["secToken"]:
+            return data["secToken"]
+    except (FetchError, ValueError, AttributeError):
+        pass
+    return None
 
 
 def qwen_unwrap(value):
@@ -660,15 +700,28 @@ def parse_qwen(d):
     return wins
 
 
-def fetch_qwen():
-    cookie, region = qwen_credential()
-    console = QWEN_CONSOLES[region]
+def qwen_usage(console, cookie):
+    """One gateway call on one portal surface. Raises FetchError like every fetcher."""
     sec_token = qwen_sec_token(console, cookie)
     csrf = qwen_cookie_value(cookie, "login_aliyunid_csrf") or qwen_cookie_value(cookie, "csrf")
-    params = {"Api": QWEN_USAGE_API, "Data": {"cornerstoneParam": dict(console["cornerstone"])}, "V": "1.0"}
-    body = urllib.parse.urlencode({"product": "sfm_bailian", "action": console["action"],
-                                   "region": console["region"], "sec_token": sec_token,
-                                   "params": json.dumps(params)})
+    cornerstone = dict(console["cornerstone"])
+    if console["feURL"]:
+        cornerstone["feURL"] = console["dashboard"]
+    if console["trace"]:
+        cornerstone["feTraceId"] = "%08x-%04x-4%03x-%04x-%012x" % (
+            int.from_bytes(os.urandom(4), "big"), int.from_bytes(os.urandom(2), "big"),
+            int.from_bytes(os.urandom(2), "big"), int.from_bytes(os.urandom(2), "big"),
+            int.from_bytes(os.urandom(6), "big"))
+    cna = qwen_cookie_value(cookie, "cna")
+    if cna:
+        cornerstone["X-Anonymous-Id"] = cna
+    fields = {"product": "sfm_bailian", "action": console["action"], "region": console["region"]}
+    if console["language"]:
+        fields["language"] = console["language"]
+    fields["params"] = json.dumps({"Api": QWEN_USAGE_API, "V": "1.0",
+                                   "Data": {"cornerstoneParam": cornerstone}})
+    if sec_token:
+        fields["sec_token"] = sec_token
     headers = {"Accept": "application/json, text/plain, */*",
                "Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie,
                "Origin": console["origin"], "Referer": console["dashboard"],
@@ -676,7 +729,8 @@ def fetch_qwen():
     if csrf:
         headers["x-xsrf-token"] = csrf
         headers["x-csrf-token"] = csrf
-    _, text = http_raw(console["usage"], headers, "Qwen Token Plan", body=body, agent=BROWSER_UA)
+    _, text = http_raw(console["usage"], headers, "Alibaba Token Plan",
+                       body=urllib.parse.urlencode(fields), agent=BROWSER_UA)
     try:
         envelope = json.loads(text)
     except ValueError:
@@ -687,14 +741,31 @@ def fetch_qwen():
     if isinstance(inner, dict) and inner.get("success") is False:
         code = str(inner.get("errorCode") or "")
         if "NotLogined" in code or "NeedLogin" in code:
-            raise FetchError("recookie", cli="Qwen Token Plan")
-        # Team.NotAuthorised and friends: the session answered, but this account has no
-        # individual Token Plan quota. Raw gateway codes are meaningless here and would
-        # not fit the popup, so they collapse to one honest line.
+            raise FetchError("recookie", cli="Alibaba Token Plan")
+        # Team.NotAuthorised and friends: the session answered, but this portal has no
+        # individual Token Plan quota for the account. Raw gateway codes are meaningless
+        # here and would not fit the popup, so they collapse to one honest line.
         raise FetchError("noquota")
     if envelope.get("successResponse") is False or not isinstance(inner, dict):
-        raise FetchError("recookie", cli="Qwen Token Plan")
-    return {"plan": "Token Plan", "windows": parse_qwen(qwen_unwrap(inner))}
+        raise FetchError("recookie", cli="Alibaba Token Plan")
+    windows = parse_qwen(qwen_unwrap(inner))
+    return {"plan": "Token Plan", "windows": windows}
+
+
+def fetch_qwen():
+    """An international cookie may live on either intl portal surface: try them in the
+    order the credential's region suggests. A portal that denies the login is a chance
+    the next one recognises the same cookie; a plan-shaped failure is final."""
+    cookie, order = qwen_credential()
+    first_error = None
+    for name in order:
+        try:
+            return qwen_usage(QWEN_CONSOLES[name], cookie)
+        except FetchError as e:
+            if e.code not in ("recookie", "noquota"):
+                raise
+            first_error = first_error or e
+    raise first_error
 
 
 FETCH = {"claude": fetch_claude, "codex": fetch_codex, "zai": fetch_zai, "deepseek": fetch_deepseek,

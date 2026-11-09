@@ -6,7 +6,8 @@ All notable changes to this project are documented here. The project follows [Se
 
 ### Added
 
-- Alibaba Cloud Token Plan (QwenCloud) 5-hour and weekly credit windows, shown as `Qwen` in the tab bar and popup. The plan's `sk-sp-…` API key cannot see its own quota, so the fetch replays the console gateway call the QwenCloud dashboard makes, using the login cookie that omp's `/login alibaba-token-plan` stores in its credential store (also readable from `$ALIBABA_TOKEN_PLAN_API_KEY` / `$BAILIAN_TOKEN_PLAN_API_KEY`, or the plugin config's `alibaba_cookie`). A China-region key (`token-plan.cn-beijing…`) is routed to the Bailian console. Plans that only report a monthly window show a 30-day row.
+- Alibaba Cloud Token Plan 5-hour and weekly credit windows, shown as `Alibaba` in the tab bar and popup. The plan's `sk-sp-…` API key cannot see its own quota, so the fetch replays the console gateway call the plan dashboard makes, using the login cookie that omp's `/login alibaba-token-plan` stores in its credential store (also readable from `$ALIBABA_TOKEN_PLAN_API_KEY` / `$BAILIAN_TOKEN_PLAN_API_KEY`, or the plugin config's `alibaba_cookie`). The same plan is sold through three portals — Alibaba Cloud Model Studio International (Singapore), its QwenCloud rebrand, and China (Beijing) Bailian — each with its own gateway host and `consoleSite`; the key's region orders them and each is tried until one recognises the cookie. Plans that only report a monthly window show a 30-day row.
+- The security token the gateway asks for is resolved best-effort (a `sec_token` cookie, the shell HTML fetched with document-navigation headers, then the user-info endpoint) and may be absent: some accounts are served on cookie alone, so the request goes out regardless instead of failing early.
 - Two new error states: "Console session expired" when the captured cookie no longer logs in, and "No individual Token Plan quota on this account" when the gateway answers but the account has nothing to report (for example a Team-edition seat).
 - DeepSeek's pay-as-you-go account balance, in the tab bar (`$19.39 left`) and the popup (`topped up`/`granted` split). The key is read from `$DEEPSEEK_API_KEY`, the plugin config's `deepseek_key`, or omp's credential store (`~/.omp/agent/agent.db`, read-only). DeepSeek publishes no usage or quota endpoint, so there is no percentage and no reset time.
 - A rejected DeepSeek key reports "API key rejected" instead of a login-expiry prompt.
@@ -15,7 +16,7 @@ All notable changes to this project are documented here. The project follows [Se
 
 - Codex and Z.AI stayed stale (`~`, "Network error") on hosts whose IPv6 route drops packets: each IPv6 address used the full 10 s timeout before IPv4 was tried, so the fetch missed the 15 s deadline. Connections now give each address 3 s and alternate address families.
 - The popup clipped the Z.AI block: it was still sized for two providers. It is taller, and the detail view switches to compact when the rows still do not fit.
-- The popup is sized for five providers again (22 → 30 rows), so the Qwen block is no longer clipped; the detail view still falls back to compact when the rows do not fit.
+- The popup is sized for five providers again (22 → 30 rows), so the Alibaba block is no longer clipped; the detail view still falls back to compact when the rows do not fit.
 
 ## [0.2.0] - 2026-10-10
 
