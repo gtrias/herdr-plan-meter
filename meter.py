@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan Meter — Claude Code, Codex, Z.AI, and DeepSeek usage in the herdr tab bar and popup.
+"""Plan Meter — Claude Code, Codex, Z.AI, DeepSeek, and Alibaba Token Plan usage in the herdr tab bar and popup.
 
   meter.py bar       one line for herdr's tab bar (a ui.tab_bar_right command entry);
                      refreshes the cache first when it is stale
@@ -12,9 +12,9 @@
 
 Credentials come from each tool's own login (Claude Code: macOS Keychain or
 ~/.claude/.credentials.json; Codex: $CODEX_HOME/auth.json; Z.AI: Pi's
-$PI_CODING_AGENT_DIR/auth.json; DeepSeek: $DEEPSEEK_API_KEY, the plugin
-config, or omp's ~/.omp/agent/agent.db) and go only to that vendor's usage
-endpoint.
+$PI_CODING_AGENT_DIR/auth.json; DeepSeek and Alibaba Token Plan: omp's
+~/.omp/agent/agent.db, or $DEEPSEEK_API_KEY / the plugin config for DeepSeek)
+and go only to that vendor's usage endpoint.
 When a Claude access token has expired, the plugin uses the refresh token to
 obtain a new one and writes it back to ~/.claude/.credentials.json (or the
 macOS Keychain). The cache stores plan names, percentages, and reset times only.
@@ -60,9 +60,9 @@ FETCH_DEADLINE = 15  # herdr kills a tab bar command at 25 s, and urllib's timeo
 CONNECT_TIMEOUT = 3  # per address: a dead IPv6 route must not eat the deadline before IPv4 is tried
 STALE_AFTER = 900    # no successful fetch for 15 minutes: prefix the tab bar number with ~
 DEMO = os.environ.get("PLAN_METER_DEMO") == "1"
-PROVIDERS = ("claude", "codex", "zai", "deepseek")
-NAME = {"claude": "Claude", "codex": "Codex", "zai": "Z.AI", "deepseek": "DeepSeek"}
-NERD_ICON = {"claude": "\uec82", "codex": "\uec81", "zai": "Z", "deepseek": "D"}  # Text fallback; no bundled glyph.
+PROVIDERS = ("claude", "codex", "zai", "deepseek", "alibaba")
+NAME = {"claude": "Claude", "codex": "Codex", "zai": "Z.AI", "deepseek": "DeepSeek", "alibaba": "Qwen"}
+NERD_ICON = {"claude": "\uec82", "codex": "\uec81", "zai": "Z", "deepseek": "D", "alibaba": "Q"}  # Text fallback; no bundled glyph.
 
 TEXT = {
     "en": {
@@ -78,6 +78,8 @@ TEXT = {
         "setup_keys": "c copy to clipboard · q close", "copied": "Copied.", "no_clipboard": "No clipboard tool found.",
         "left": "left", "balance": "Balance", "granted": "granted {amount}", "topped": "topped up {amount}",
         "badkey": "API key rejected — sign in again",
+        "recookie": "Console session expired — re-import the cookie in omp",
+        "noquota": "No individual Token Plan quota on this account",
     },
     "ko": {
         "used": "사용", "session": "5시간", "weekly": "주간", "hours": "{n}시간", "days": "{n}일",
@@ -92,6 +94,8 @@ TEXT = {
         "setup_keys": "c 클립보드에 복사 · q 닫기", "copied": "복사했어요.", "no_clipboard": "클립보드 도구가 없어요.",
         "left": "남음", "balance": "잔액", "granted": "지급 {amount}", "topped": "충전 {amount}",
         "badkey": "API 키가 거부됐어요 — 다시 로그인하세요",
+        "recookie": "콘솔 세션 만료 — omp 에서 쿠키를 다시 붙여 넣으세요",
+        "noquota": "이 계정에는 개인용 Token Plan 한도가 없어요",
     },
 }
 
@@ -113,7 +117,9 @@ def load_config():
     """Optional config.toml in the plugin config dir (`herdr plugin config-dir gtrias.plan-meter`),
     flat `key = "value"` lines: lang = "auto" | "en" | "ko", icons = "text" | "nerd",
     deepseek_key = "sk-…" (only needed when neither $DEEPSEEK_API_KEY nor omp's
-    credential store has one)."""
+    credential store has one); alibaba_key + alibaba_cookie and alibaba_base_url
+    (only needed when omp's credential store has no alibaba-token-plan login,
+    or its cookie has no quota access)."""
     try:
         text = (plugin_config_dir() / "config.toml").read_text()
     except OSError:
@@ -201,11 +207,14 @@ class FastFallbackHandler(urllib.request.HTTPSHandler):
 OPENER = urllib.request.build_opener(NoRedirect, FastFallbackHandler)
 
 
-def http_json(url, headers, cli):
-    req = urllib.request.Request(url, headers={**headers, "User-Agent": UA})
+def http_raw(url, headers, cli, body=None, agent=UA):
+    """One request through the fast-fallback opener: (status, text). body is form-encoded
+    by the caller; the Token Plan gateway insists on application/x-www-form-urlencoded."""
+    data = body.encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, headers={**headers, "User-Agent": agent})
     try:
         with OPENER.open(req, timeout=10) as r:
-            return json.load(r)
+            return r.status, r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise FetchError("expired", cli=cli)
@@ -213,10 +222,16 @@ def http_json(url, headers, cli):
             ra = e.headers.get("Retry-After", "")
             raise FetchError("limited", max(300, int(ra) if ra.isdigit() else 0))
         raise FetchError("http", status=e.code)
-    except ValueError:
-        raise FetchError("format")
     except OSError:  # URLError, timeouts
         raise FetchError("network")
+
+
+def http_json(url, headers, cli):
+    _, text = http_raw(url, headers, cli)
+    try:
+        return json.loads(text)
+    except ValueError:
+        raise FetchError("format")
 
 
 def to_epoch(v):
@@ -513,7 +528,177 @@ def fetch_deepseek():
     return {"plan": "API", "windows": [], "balance": parse_deepseek(d)}
 
 
-FETCH = {"claude": fetch_claude, "codex": fetch_codex, "zai": fetch_zai, "deepseek": fetch_deepseek}
+# ── Alibaba Token Plan (QwenCloud / Bailian console) ───────────────────
+# The plan's API key cannot see its own quota: the numbers live in the console
+# gateway the dashboard calls, which answers to the login cookie, not the key.
+QWEN_USAGE_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage"
+QWEN_CN_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
+QWEN_CONSOLES = {
+    "intl": {
+        "origin": "https://home.qwencloud.com",
+        "dashboard": "https://home.qwencloud.com/billing/subscription/token-plan-individual",
+        "session": "https://home.qwencloud.com/tool/user/info.json",
+        "usage": "https://cs-data.qwencloud.com/data/api.json?product=sfm_bailian"
+                 "&action=IntlBroadScopeAspnGateway&api=" + urllib.parse.quote(QWEN_USAGE_API, safe=""),
+        "action": "IntlBroadScopeAspnGateway", "region": "ap-southeast-1",
+        "cornerstone": {"domain": "home.qwencloud.com", "consoleSite": "QWENCLOUD", "console": "ONE_CONSOLE",
+                        "xsp_lang": "en-US", "protocol": "V2", "productCode": "p_efm"},
+    },
+    "cn": {
+        "origin": "https://bailian.console.aliyun.com",
+        "dashboard": "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
+        "session": "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
+        "usage": "https://bailian-cs.console.aliyun.com/data/api.json?action=BroadScopeAspnGateway"
+                 "&product=sfm_bailian&api=" + urllib.parse.quote(QWEN_USAGE_API, safe=""),
+        "action": "BroadScopeAspnGateway", "region": "cn-beijing",
+        "cornerstone": {"feURL": "https://bailian.console.aliyun.com/cn-beijing?tab=plan"
+                                  "#/efm/subscription/token-plan/personal",
+                        "protocol": "V2", "console": "ONE_CONSOLE", "productCode": "p_efm",
+                        "switchAgent": 12608464, "switchUserType": 3,
+                        "domain": "bailian.console.aliyun.com", "consoleSite": "BAILIAN_ALIYUN",
+                        "userNickName": "", "userPrincipalName": "", "xsp_lang": "zh-CN"},
+    },
+}
+
+
+def qwen_credential():
+    """(cookie, console key). The Token Plan credential omp stores is the JSON form the
+    console login writes: {"token":…, "cookie":…, "baseUrl":…}; a bare sk-… key has no
+    quota access, so it is not enough here. The plugin config can supply either form."""
+    key = (os.environ.get("ALIBABA_TOKEN_PLAN_API_KEY") or os.environ.get("BAILIAN_TOKEN_PLAN_API_KEY")
+           or omp_api_key("alibaba-token-plan"))
+    cfg = load_config()
+    key = cfg.get("alibaba_key") or key
+    blob = {}
+    if key and key.strip().startswith("{"):
+        with contextlib.suppress(ValueError):
+            blob = json.loads(key)
+    cookie = cfg.get("alibaba_cookie") or (blob.get("cookie") if isinstance(blob, dict) else None)
+    base_url = cfg.get("alibaba_base_url") or (blob.get("baseUrl") if isinstance(blob, dict) else None)
+    if not isinstance(cookie, str) or not cookie.strip():
+        raise FetchError("nologin")
+    return cookie.strip(), "cn" if base_url == QWEN_CN_BASE_URL else "intl"
+
+
+def qwen_cookie_value(cookie, name):
+    for segment in cookie.split(";"):
+        at = segment.find("=")
+        if at > 0 and segment[:at].strip() == name and segment[at + 1:].strip():
+            return segment[at + 1:].strip()
+    return None
+
+
+def qwen_sec_token(console, cookie):
+    """The gateway needs a per-session security token. The consoles hand it out three
+    ways and which one answers depends on the plan generation: JSON `secToken` from the
+    user-info endpoint, a `SEC_TOKEN` literal in the console HTML, or a `sec_token`
+    cookie. Every route that fails is a 3xx or a login page, which is refused as a
+    redirect by the opener; none of them proves the cookie dead on its own."""
+    sources = [(console["session"], "application/json, text/plain, */*"),
+               (console["dashboard"], "text/html,application/xhtml+xml,*/*;q=0.8")]
+    for url, accept in sources:
+        try:
+            _, text = http_raw(url, {"Accept": accept, "Cookie": cookie,
+                                     "Referer": console["origin"] + "/"}, "Qwen Token Plan", agent=BROWSER_UA)
+        except FetchError:
+            continue
+        try:
+            token = json.loads(text).get("data", {}).get("secToken")
+            if isinstance(token, str) and token:
+                return token
+        except (ValueError, AttributeError):
+            pass
+        token = re.search(r'\bSEC_TOKEN\s*[:=]\s*"([^"]+)"', text)
+        if token:
+            return token.group(1)
+    token = qwen_cookie_value(cookie, "sec_token")
+    if not token:
+        raise FetchError("recookie", cli="Qwen Token Plan")
+    return token
+
+
+def qwen_unwrap(value):
+    """The gateway buries the business payload one or two layers deeper than the envelope,
+    and sometimes as a JSON string inside `Data`."""
+    current = value
+    if isinstance(current, dict) and isinstance(current.get("Data"), str):
+        with contextlib.suppress(ValueError):
+            parsed = json.loads(current["Data"])
+            if isinstance(parsed, dict):
+                current = parsed
+    if isinstance(current, dict) and isinstance(current.get("DataV2"), dict):
+        current = current["DataV2"].get("data") or current["DataV2"]
+    if isinstance(current, dict) and isinstance(current.get("data"), dict):
+        current = current["data"]
+    return current if isinstance(current, dict) else {}
+
+
+def qwen_window(kind, used, resets_at):
+    if not isinstance(used, (int, float)) or isinstance(used, bool) or used < 0:
+        return None
+    n = kind[1] if isinstance(kind, tuple) else None
+    return {"kind": kind[0] if n else kind, **({"n": n} if n else {}),
+            "used": min(100.0, used * 100 if used <= 1 else float(used)),
+            "resets_at": to_epoch(resets_at)}
+
+
+def parse_qwen(d):
+    """Credits consumed per window. The console reports a fraction (0…1) on newer plan
+    generations and a percentage (0…100) on older ones; some only answer monthly.
+    omp reads the same fields the same way, so the two meters agree."""
+    wins = []
+    for kind, key, reset in (("session", "per5HourPercentage", "per5HourResetTime"),
+                             ("weekly", "per1WeekPercentage", "per1WeekResetTime"),
+                             (("days", 30), "per1MonthPercentage", "per1MonthResetTime")):
+        w = qwen_window(kind, d.get(key), d.get(reset))
+        if w:
+            wins.append(w)
+    if not wins:
+        raise FetchError("format")
+    return wins
+
+
+def fetch_qwen():
+    cookie, region = qwen_credential()
+    console = QWEN_CONSOLES[region]
+    sec_token = qwen_sec_token(console, cookie)
+    csrf = qwen_cookie_value(cookie, "login_aliyunid_csrf") or qwen_cookie_value(cookie, "csrf")
+    params = {"Api": QWEN_USAGE_API, "Data": {"cornerstoneParam": dict(console["cornerstone"])}, "V": "1.0"}
+    body = urllib.parse.urlencode({"product": "sfm_bailian", "action": console["action"],
+                                   "region": console["region"], "sec_token": sec_token,
+                                   "params": json.dumps(params)})
+    headers = {"Accept": "application/json, text/plain, */*",
+               "Content-Type": "application/x-www-form-urlencoded", "Cookie": cookie,
+               "Origin": console["origin"], "Referer": console["dashboard"],
+               "X-Requested-With": "XMLHttpRequest"}
+    if csrf:
+        headers["x-xsrf-token"] = csrf
+        headers["x-csrf-token"] = csrf
+    _, text = http_raw(console["usage"], headers, "Qwen Token Plan", body=body, agent=BROWSER_UA)
+    try:
+        envelope = json.loads(text)
+    except ValueError:
+        raise FetchError("format")
+    if not isinstance(envelope, dict):
+        raise FetchError("format")
+    inner = envelope.get("data")
+    if isinstance(inner, dict) and inner.get("success") is False:
+        code = str(inner.get("errorCode") or "")
+        if "NotLogined" in code or "NeedLogin" in code:
+            raise FetchError("recookie", cli="Qwen Token Plan")
+        # Team.NotAuthorised and friends: the session answered, but this account has no
+        # individual Token Plan quota. Raw gateway codes are meaningless here and would
+        # not fit the popup, so they collapse to one honest line.
+        raise FetchError("noquota")
+    if envelope.get("successResponse") is False or not isinstance(inner, dict):
+        raise FetchError("recookie", cli="Qwen Token Plan")
+    return {"plan": "Token Plan", "windows": parse_qwen(qwen_unwrap(inner))}
+
+
+FETCH = {"claude": fetch_claude, "codex": fetch_codex, "zai": fetch_zai, "deepseek": fetch_deepseek,
+         "alibaba": fetch_qwen}
 
 
 def attempt(p):
@@ -557,6 +742,9 @@ def demo_data(now):
         "deepseek": {"plan": "API", "fetched_at": now - 20, "windows": [],
                      "balance": {"amount": 19.39, "currency": "USD", "granted": 0.0,
                                  "topped_up": 19.39, "available": True}},
+        "alibaba": {"plan": "Token Plan", "fetched_at": now - 20, "windows": [
+            {"kind": "session", "used": 9, "resets_at": now + 44 * 60},
+            {"kind": "weekly", "used": 17, "resets_at": now + 2 * d + 6 * h}]},
     }
 
 
@@ -680,7 +868,8 @@ def label(w, t):
     return f"{base} · {w['model']}" if w.get("model") else base
 
 
-ERRORS = ("expired", "limited", "http", "network", "format", "nologin", "badkey", "unexpected")
+ERRORS = ("expired", "limited", "http", "network", "format", "nologin", "badkey", "recookie", "noquota",
+          "unexpected")
 
 
 def error_text(err, t):
@@ -712,7 +901,8 @@ def bar_text(data, now, view):
 
 RGB = {"fg": (192, 202, 245), "dim": (110, 118, 150), "track": (59, 66, 97), "green": (158, 206, 106),
        "yellow": (224, 175, 104), "red": (247, 118, 142), "claude": (217, 119, 87),
-       "codex": (236, 236, 241), "zai": (75, 124, 255), "deepseek": (77, 107, 254)}
+       "codex": (236, 236, 241), "zai": (75, 124, 255), "deepseek": (77, 107, 254),
+       "alibaba": (255, 106, 0)}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 

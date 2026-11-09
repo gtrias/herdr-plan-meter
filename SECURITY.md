@@ -10,6 +10,7 @@ Plan Meter reads subscription credentials that belong to other tools, so here is
 | Codex ChatGPT access token and account id | `$CODEX_HOME/auth.json` (default `~/.codex`) | On each fetch |
 | Z.AI API key | `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`), provider `zai`, field `key` | On each fetch |
 | DeepSeek API key | `$DEEPSEEK_API_KEY`, the plugin config's `deepseek_key`, or the `deepseek` `api_key` row in omp's credential store `$OMP_AGENT_DIR/agent.db` (default `~/.omp/agent/agent.db`), opened read-only | On each fetch |
+| Alibaba Token Plan console cookie | `$ALIBABA_TOKEN_PLAN_API_KEY` / `$BAILIAN_TOKEN_PLAN_API_KEY` (JSON form with a `cookie`), the plugin config's `alibaba_cookie`, or the `alibaba-token-plan` `api_key` row in omp's credential store, opened read-only | On each fetch |
 
 ## Where it goes
 
@@ -17,6 +18,7 @@ Plan Meter reads subscription credentials that belong to other tools, so here is
 - Codex: `https://chatgpt.com/backend-api/wham/usage`, sent as a `Bearer` token plus `ChatGPT-Account-Id`
 - Z.AI: `https://api.z.ai/api/monitor/usage/quota/limit`, sent in the `Authorization` header
 - DeepSeek: `https://api.deepseek.com/user/balance`, sent as a `Bearer` token
+- Alibaba Token Plan: `https://cs-data.qwencloud.com/data/api.json` (international) or `https://bailian-cs.console.aliyun.com/data/api.json` (China), with the console cookie and a per-session `sec_token`; the plan's own API key is never sent, it cannot see quota
 
 Nothing else leaves the machine. Redirects are refused, so a token can never follow a 3xx to another host. There is no telemetry and no third-party server.
 
