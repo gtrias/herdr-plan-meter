@@ -29,7 +29,7 @@ The second command opens a popup with the config snippet for your install. Press
 
 | Where | What |
 |---|---|
-| Tab bar | For each plan, the window closest to its limit: percent used and time until it resets. DeepSeek, which has no quota, shows its remaining API balance. `~` marks a reading older than 15 minutes. |
+| Tab bar | For each plan, the window closest to its limit: percent used and time until it resets; DeepSeek shows its remaining API balance instead. From three visible plans the bar compacts itself (`Claude 84% 12h`) so five plans still fit — `bar = "long"` keeps the full wording. `~` marks a reading older than 15 minutes. |
 | Popup (`prefix+u`) | Every window (5-hour, weekly, per-model weekly) with a bar colored by headroom and the reset time on your clock; the DeepSeek balance with what was topped up and granted. `Tab` switches Detail/Compact, `r` refreshes, `q` closes. |
 | Errors | An expired login, a 429, or a changed response shows in the popup. The last good reading stays in place. |
 
@@ -75,6 +75,7 @@ Manual refreshes are limited to one every 30 seconds.
 ```toml
 lang = "auto"   # auto | en | ko. auto follows the macOS UI language, then LANG.
 icons = "text"  # text | nerd
+bar = "auto"    # auto | compact | long. auto drops "used"/"left" and minutes when 3+ plans show; compact/long force one shape
 # deepseek_key = "sk-…"  # only when neither $DEEPSEEK_API_KEY nor omp's credential store has one
 # alibaba_cookie = "name=value; …"  # only when omp's alibaba-token-plan login has no cookie
 ```

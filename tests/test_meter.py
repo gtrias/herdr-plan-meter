@@ -581,7 +581,7 @@ class Cache(unittest.TestCase):
         for text in ("[]", '{"claude": "x", "codex": {"windows": {"used": 1}, "error": "old"}}', "{"):
             meter.CACHE.write_text(text)
             data = meter.load()
-            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –   Codex –   Z.AI –   DeepSeek –   Alibaba –")
+            self.assertEqual(meter.bar_text(data, NOW, EN), "Claude –  Codex –  Z.AI –  DeepSeek –  Alibaba –")
             meter.panel_lines(data, NOW, "detail", False, 62, EN)
 
 
@@ -652,6 +652,28 @@ class Rendering(unittest.TestCase):
         self.assertEqual(meter.left(NOW + 59, NOW), "0m")
         self.assertEqual(meter.left(NOW + 2 * 3600 + 13 * 60, NOW), "2h 13m")
         self.assertEqual(meter.left(NOW + 86400 + 3600, NOW), "1d 1h")
+
+    def test_auto_compacts_from_three_plans(self):
+        pair = {"claude": reading([{"kind": "weekly", "used": 21, "resets_at": NOW + 3 * 86400 + 10 * 3600}]),
+                "codex": reading([{"kind": "weekly", "used": 4, "resets_at": NOW + 4 * 86400}]),
+                "zai": NO_LOGIN, "deepseek": NO_LOGIN, "alibaba": NO_LOGIN}
+        self.assertEqual(meter.bar_text(pair, NOW, EN), "Claude 21% used 3d 10h   Codex 4% used 4d 0h")
+        trio = dict(pair, zai=reading([{"kind": "session", "used": 37.5, "resets_at": NOW + 2 * 3600}]))
+        self.assertEqual(meter.bar_text(trio, NOW, EN), "Claude 21% 3d  Codex 4% 4d  Z.AI 38% 2h")
+
+    def test_bar_style_config(self):
+        long = meter.View({"bar": "long"})
+        self.assertIn(" used ", meter.bar_text(meter.demo_data(NOW), NOW, long))
+        self.assertIn(" left", meter.bar_text(meter.demo_data(NOW), NOW, long))
+        forced = meter.View({"bar": "compact"})
+        one = {"claude": reading([{"kind": "session", "used": 8, "resets_at": NOW + 2 * 3600 + 13 * 60}]),
+               "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN, "alibaba": NO_LOGIN}
+        self.assertEqual(meter.bar_text(one, NOW, forced), "Claude 8% 2h")
+
+    def test_left_short(self):
+        self.assertEqual(meter.left_short(NOW + 59, NOW), "0m")
+        self.assertEqual(meter.left_short(NOW + 2 * 3600 + 59 * 60, NOW), "2h")
+        self.assertEqual(meter.left_short(NOW + 3 * 86400 + 10 * 3600, NOW), "3d")
 
     def test_error_text(self):
         self.assertEqual(meter.error_text({"code": "http", "status": 500}, EN.t), "HTTP 500")

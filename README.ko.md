@@ -29,7 +29,7 @@ herdr plugin action invoke gtrias.plan-meter.setup
 
 | 위치 | 내용 |
 |---|---|
-| 탭 바 | 요금제마다 한도에 가장 가까운 창의 사용률과 초기화까지 남은 시간. 한도가 없는 DeepSeek은 남은 API 잔액을 보여 줍니다. 15분 넘게 갱신되지 않은 값에는 `~`가 붙습니다. |
+| 탭 바 | 요금제마다 한도에 가장 가까운 창의 사용률과 초기화까지 남은 시간. 한도가 없는 DeepSeek은 남은 API 잔액을 보여 줍니다. 보이는 요금제가 3개부터는 탭 바가 스스로 압축됩니다(`Claude 84% 12h`) — `bar = "long"`으로 원래 문구를 되돌릴 수 있습니다. 15분 넘게 갱신되지 않은 값에는 `~`가 붙습니다. |
 | 팝업 (`prefix+u`) | 모든 창(5시간·주간·모델별 주간)을 여유에 따라 색이 바뀌는 막대와 초기화 시각(내 시계 기준)으로 보여 주고, DeepSeek은 잔액과 충전·지급 내역을 보여 줍니다. `Tab` 상세/압축 전환, `r` 새로고침, `q` 닫기. |
 | 오류 | 로그인 만료, 429, 응답 형식 변경은 팝업에 표시되고, 마지막 정상값은 그대로 남습니다. |
 
@@ -75,6 +75,7 @@ description = "요금제 사용량 새로고침"
 ```toml
 lang = "auto"   # auto | en | ko. auto는 macOS UI 언어, 그다음 LANG을 따릅니다.
 icons = "text"  # text | nerd
+bar = "auto"    # auto | compact | long. auto는 보이는 요금제가 3개부터 "사용"/"남음"과 분을 생략합니다
 # deepseek_key = "sk-…"  # $DEEPSEEK_API_KEY나 omp 자격 증명 저장소에 없을 때만
 # alibaba_cookie = "name=value; …"  # omp의 alibaba-token-plan 로그인에 쿠키가 없을 때만
 ```

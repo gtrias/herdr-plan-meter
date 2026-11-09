@@ -116,6 +116,7 @@ def plugin_config_dir():
 def load_config():
     """Optional config.toml in the plugin config dir (`herdr plugin config-dir gtrias.plan-meter`),
     flat `key = "value"` lines: lang = "auto" | "en" | "ko", icons = "text" | "nerd",
+    bar = "auto" | "compact" | "long" (auto compacts the tab bar from three visible plans),
     deepseek_key = "sk-…" (only needed when neither $DEEPSEEK_API_KEY nor omp's
     credential store has one); alibaba_key + alibaba_cookie and alibaba_base_url
     (only needed when omp's credential store has no alibaba-token-plan login,
@@ -148,6 +149,10 @@ class View:
     def __init__(self, cfg):
         self.t = TEXT[pick_lang(cfg.get("lang", "auto"))]
         self.nerd = cfg.get("icons") == "nerd"
+        self.bar = cfg.get("bar") or "auto"  # auto: compact once three plans share the bar
+
+    def compact_bar(self, n_shown):
+        return self.bar == "compact" or (self.bar == "auto" and n_shown >= 3)
 
     def mark(self, p):
         # an extra space after the icon: terminals like Ghostty let an icon spill into the next cell
@@ -919,6 +924,12 @@ def left(ts, now):
     return f"{d}d {h}h" if d else f"{h}h {m}m" if h else f"{m}m"
 
 
+def left_short(ts, now):
+    # one unit: the popup shows the exact moment; the bar only needs the order of magnitude
+    s = max(0, int(ts - now))
+    return f"{s // 86400}d" if s >= 86400 else f"{s // 3600}h" if s >= 3600 else f"{s // 60}m"
+
+
 def clock(ts, now, t):
     at = datetime.fromtimestamp(ts)
     day = t["today"] if at.date() == datetime.fromtimestamp(now).date() else t["weekdays"][at.weekday()]
@@ -953,8 +964,13 @@ def error_text(err, t):
 
 
 def bar_text(data, now, view):
+    items = shown(data)
+    # five plans of "48% used 2h 25m" overflow any tab bar; past three, the bar keeps only
+    # the percentage and a coarse countdown — the popup is one key away
+    compact = view.compact_bar(len(items))
+    sep = "  " if compact else "   "
     parts = []
-    for p in shown(data):
+    for p in items:
         st = data.get(p, {})
         wins = windows_now(st, now)
         bal = balance_of(st)
@@ -963,12 +979,15 @@ def bar_text(data, now, view):
             parts.append(f"{view.mark(p)} –")
             continue
         if bal:
-            parts.append(f"{view.mark(p)} {stale}{balance_text(bal)} {view.t['left']}")
+            tail = "" if compact else f" {view.t['left']}"
+            parts.append(f"{view.mark(p)} {stale}{balance_text(bal)}{tail}")
             continue
         w = headline(wins)
-        reset = f" {left(w['resets_at'], now)}" if w["resets_at"] else ""
-        parts.append(f"{view.mark(p)} {stale}{round(w['used'])}% {view.t['used']}{reset}")
-    return "   ".join(parts)
+        span = "" if not w["resets_at"] else left_short(w["resets_at"], now) if compact else left(w["resets_at"], now)
+        reset = f" {span}" if span else ""
+        used = "" if compact else f" {view.t['used']}"
+        parts.append(f"{view.mark(p)} {stale}{round(w['used'])}%{used}{reset}")
+    return sep.join(parts)
 
 
 RGB = {"fg": (192, 202, 245), "dim": (110, 118, 150), "track": (59, 66, 97), "green": (158, 206, 106),
