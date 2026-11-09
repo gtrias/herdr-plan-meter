@@ -119,7 +119,8 @@ def load_config():
     deepseek_key = "sk-…" (only needed when neither $DEEPSEEK_API_KEY nor omp's
     credential store has one); alibaba_key + alibaba_cookie and alibaba_base_url
     (only needed when omp's credential store has no alibaba-token-plan login,
-    or its cookie has no quota access)."""
+    or its cookie has no quota access); alibaba_console = "alibaba" | "qwen" | "cn"
+    pins one portal instead of trying them in the order the key's region suggests."""
     try:
         text = (plugin_config_dir() / "config.toml").read_text()
     except OSError:
