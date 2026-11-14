@@ -623,8 +623,18 @@ class Rendering(unittest.TestCase):
     def test_shown_uses_valid_rows_regardless_of_reset_times(self):
         # a provider whose every window already reset still counts as signed in
         data = {"claude": reading([{"kind": "session", "used": 90, "resets_at": NOW - 1}]),
-                "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN}
+                "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN, "alibaba": NO_LOGIN}
         self.assertEqual(meter.shown(data), ["claude"])
+
+    def test_cached_windows_survive_a_nologin_error(self):
+        # refresh() merges a fresh nologin error into a state that still has cached
+        # windows or a balance: those keep the provider visible
+        data = {"claude": {"windows": [{"kind": "session", "used": 42, "resets_at": NOW + 60}],
+                           "fetched_at": NOW, "error": {"code": "nologin"}},
+                "deepseek": {"balance": {"amount": 12.5, "currency": "USD"},
+                             "fetched_at": NOW, "error": {"code": "nologin"}},
+                "codex": NO_LOGIN, "zai": NO_LOGIN, "alibaba": NO_LOGIN}
+        self.assertEqual(meter.shown(data), ["claude", "deepseek"])
 
     def test_provider_without_login_is_hidden(self):
         data = {"claude": reading([{"kind": "weekly", "used": 5, "resets_at": None}]),
