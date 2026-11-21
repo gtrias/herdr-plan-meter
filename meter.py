@@ -923,6 +923,15 @@ def headline(wins):
     return max(wins, key=lambda w: (w["used"], w.get("resets_at") or 0))
 
 
+def provider_view(st, now):
+    """One provider's reading, shaped for display. The tab bar and the popup ask the same
+    questions — which windows are live, whether only a balance answers, how stale the
+    numbers are, which window leads — so they ask them once, here."""
+    wins = windows_now(st, now)
+    return {"windows": wins, "balance": balance_of(st), "headline": headline(wins) if wins else None,
+            "stale": now - st.get("fetched_at", 0) > STALE_AFTER}
+
+
 def left(ts, now):
     s = max(0, int(ts - now))
     d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
@@ -976,18 +985,16 @@ def bar_text(data, now, view):
     sep = "  " if compact else "   "
     parts = []
     for p in items:
-        st = data.get(p, {})
-        wins = windows_now(st, now)
-        bal = balance_of(st)
-        stale = "~" if now - st.get("fetched_at", 0) > STALE_AFTER else ""
-        if not wins and not bal:
+        v = provider_view(data.get(p, {}), now)
+        stale = "~" if v["stale"] else ""
+        if not v["windows"] and not v["balance"]:
             parts.append(f"{view.mark(p)} –")
             continue
-        if bal:
+        if v["balance"]:
             tail = "" if compact else f" {view.t['left']}"
-            parts.append(f"{view.mark(p)} {stale}{balance_text(bal)}{tail}")
+            parts.append(f"{view.mark(p)} {stale}{balance_text(v['balance'])}{tail}")
             continue
-        w = headline(wins)
+        w = v["headline"]
         span = "" if not w["resets_at"] else left_short(w["resets_at"], now) if compact else left(w["resets_at"], now)
         reset = f" {span}" if span else ""
         used = "" if compact else f" {view.t['used']}"
@@ -1043,17 +1050,17 @@ def panel_lines(data, now, mode, busy, W, view):
     lines = [row(fg("dim", "↻ r"), seg, W), ""]
     for p in shown(data):
         st = data.get(p, {})
-        wins = windows_now(st, now)
-        bal = balance_of(st)
+        v = provider_view(st, now)
         icon = fg(p, NERD_ICON[p]) + "  " if view.nerd else ""
         title = f"{icon}{bold(fg('fg', NAME[p]))}  {fg('dim', st.get('plan') or '')}"
-        if wins:
-            h = headline(wins)
+        if v["windows"]:
+            h = v["headline"]
             reset = fg("dim", left(h["resets_at"], now)) + "  " if h["resets_at"] else ""
             lines.append(row(title, reset + bold(fg(sev(h["used"]), f"{round(h['used']):>3}%")), W))
             if mode == "detail":
-                lines += [window_row(w, now, W, t) for w in wins]
-        elif bal:
+                lines += [window_row(w, now, W, t) for w in v["windows"]]
+        elif v["balance"]:
+            bal = v["balance"]
             color = "green" if bal.get("available", True) else "red"
             lines.append(row(title, bold(fg(color, balance_text(bal))), W))
             if mode == "detail":
@@ -1064,7 +1071,7 @@ def panel_lines(data, now, mode, busy, W, view):
                              + "  " + fg("dim", " · ".join(parts)))
         else:
             lines.append(row(title, fg("dim", t["loading"] if busy else "–"), W))
-        if error_of(st) and (mode == "detail" or not (wins or bal)):
+        if error_of(st) and (mode == "detail" or not (v["windows"] or v["balance"])):
             old = fg("dim", " · " + t["as_of"].format(ago=ago(st["fetched_at"], now, t))) if st.get("fetched_at") else ""
             lines.append("    " + fg("red", "⚠ " + error_text(error_of(st), t)) + old)
         if mode == "detail":
