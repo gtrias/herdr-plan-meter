@@ -611,6 +611,29 @@ class Rendering(unittest.TestCase):
                 "codex": NO_LOGIN, "zai": NO_LOGIN, "deepseek": NO_LOGIN, "alibaba": NO_LOGIN}
         self.assertEqual(meter.bar_text(data, NOW, EN), "Claude 0% used")
 
+    def test_provider_view_shapes_a_reading_for_both_renderers(self):
+        st = reading([{"kind": "session", "used": 8, "resets_at": NOW + 3600},
+                      {"kind": "weekly", "used": 21, "resets_at": NOW + 3 * 86400}])
+        v = meter.provider_view(st, NOW)
+        self.assertEqual(v["headline"]["kind"], "weekly")  # the window that leads
+        self.assertFalse(v["stale"])
+        self.assertIsNone(v["balance"])
+
+    def test_provider_view_marks_stale_and_balance_only_states(self):
+        old = meter.provider_view(reading([{"kind": "weekly", "used": 21, "resets_at": None}],
+                                          fetched_at=NOW - 3600), NOW)
+        self.assertTrue(old["stale"])
+        bal = meter.provider_view({"balance": {"amount": 12.5, "currency": "USD"},
+                                   "fetched_at": NOW}, NOW)
+        self.assertEqual(bal["windows"], [])
+        self.assertIsNone(bal["headline"])
+        self.assertEqual(bal["balance"]["amount"], 12.5)
+
+    def test_provider_view_counts_a_passed_reset_as_started_over(self):
+        v = meter.provider_view(reading([{"kind": "session", "used": 90, "resets_at": NOW - 1}]), NOW)
+        self.assertEqual(v["windows"], [{"kind": "session", "used": 0, "resets_at": None}])
+        self.assertEqual(v["headline"]["used"], 0)
+
     def test_valid_windows_drops_malformed_rows(self):
         st = {"windows": [{"kind": "session", "used": 42, "resets_at": NOW + 60}, "junk",
                           {"kind": "weekly", "used": "n/a"}, [1, 2], None]}
