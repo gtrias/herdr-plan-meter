@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
 import urllib.parse
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import meter  # noqa: E402
@@ -732,6 +733,47 @@ class Rendering(unittest.TestCase):
 
     def test_unknown_window_kind(self):
         self.assertEqual(meter.label({"kind": "monthly"}, EN.t), "monthly")
+
+    def test_window_row_shapes_a_usage_row(self):
+        w = {"kind": "session", "used": 80, "resets_at": NOW + 3 * 86400}
+        line = meter.ANSI.sub("", meter.window_row(w, NOW, 62, EN.t))
+        self.assertTrue(line.startswith("    " + meter.label(w, EN.t).ljust(14) + " "))  # label cell is 14 wide
+        self.assertIn("━", line)  # a used window always paints at least one bar cell
+        self.assertIn("80%", line)  # the percentage is the raw usage
+        self.assertIn("3d", line)  # time left uses the day unit
+        self.assertIn(EN.t["weekdays"][datetime.fromtimestamp(NOW + 3 * 86400).weekday()], line)
+        self.assertNotIn(EN.t["today"], line)  # a reset on another day names its weekday
+
+    def test_window_row_fill_tracks_usage(self):
+        tiny = meter.window_row({"kind": "session", "used": 1, "resets_at": None}, NOW, 62, EN.t)
+        more = meter.window_row({"kind": "session", "used": 60, "resets_at": None}, NOW, 62, EN.t)
+        full = meter.window_row({"kind": "session", "used": 100, "resets_at": None}, NOW, 62, EN.t)
+        self.assertIn("━", tiny)  # any usage paints at least one bar cell
+        track_code = meter.fg("track", "━").split("━")[0]
+        used_code = meter.fg(meter.sev(1), "━").split("━")[0]
+        self.assertIn(used_code + "━", tiny)  # the painted cell is usage-coloured, not track
+        self.assertIn(track_code + "━", more)  # a 60% window leaves unfilled track cells
+        self.assertNotIn(track_code + "━", full)  # a full window fills the whole track
+        self.assertIn("100%", full)
+
+    def test_window_row_without_reset_stops_at_the_percentage(self):
+        line = meter.ANSI.sub("", meter.window_row({"kind": "session", "used": 8, "resets_at": None},
+                                                  NOW, 62, EN.t))
+        self.assertTrue(line.rstrip().endswith("8%"))
+
+    def test_windows_now_resets_at_the_exact_instant(self):
+        v = meter.windows_now(reading([{"kind": "session", "used": 90, "resets_at": NOW}]), NOW)
+        self.assertEqual(v, [{"kind": "session", "used": 0, "resets_at": None}])
+
+    def test_ago_wording_by_distance(self):
+        self.assertEqual(meter.ago(NOW - 5, NOW, EN.t), EN.t["now"])
+        self.assertEqual(meter.ago(NOW - 30, NOW, EN.t), EN.t["s"].format(n=30))
+        self.assertEqual(meter.ago(NOW - 7200, NOW, EN.t), EN.t["h"].format(n=2))
+
+    def test_balance_of_rejects_a_non_numeric_amount(self):
+        st = {"balance": {"amount": "12.5", "currency": "USD"}, "fetched_at": NOW}
+        self.assertIsNone(meter.balance_of(st))
+        self.assertIsNone(meter.provider_view(st, NOW)["balance"])
 
     def test_panel_fits_width(self):
         data = meter.demo_data(NOW)
